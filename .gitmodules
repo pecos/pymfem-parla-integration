@@ -1,0 +1,6 @@
+[submodule "code/Parla.py"]
+	path = code/Parla.py
+	url = https://github.com/ut-parla/Parla.py.git
+[submodule "code/PyMFEM"]
+	path = code/PyMFEM
+	url = https://github.com/mfem/PyMFEM.git
