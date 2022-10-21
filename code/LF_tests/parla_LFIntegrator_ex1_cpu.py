@@ -31,12 +31,61 @@
 '''
 import os
 from os.path import expanduser, join
+import argparse
+import mkl
+
+# Parse the command line information
+parser = argparse.ArgumentParser(description='Ex1 (Laplace Problem)')
+parser.add_argument('-m', '--mesh',
+                    default='star.mesh',
+                    action='store', type=str,
+                    help='Mesh file to use.')
+parser.add_argument('-vis', '--visualization',
+                    action='store_true',
+                    help='Enable GLVis visualization')
+parser.add_argument('-o', '--order',
+                    action='store', default=1, type=int,
+                    help="Finite element order (polynomial degree) or -1 for isoparametric space.")
+parser.add_argument('-sc', '--static-condensation',
+                    action='store_true',
+                    help="Enable static condensation.")
+parser.add_argument("-pa", "--partial-assembly",
+                    action='store_true',
+                    help="Enable Partial Assembly.")
+parser.add_argument("-d", "--device",
+                    default="cpu", type=str,
+                    help="Device configuration string, see Device::Configure().")
+parser.add_argument('-t', type=int, 
+                    default=1, help="Number of threads.")
+parser.add_argument('-blocks', type=int, 
+                    default=1, help="Number of blocks.")
+
+args = parser.parse_args()
+
+print(args,"\n")
+
+load = 1.0/args.blocks
+mkl.set_num_threads(args.t)
+os.environ["NUMEXPR_NUM_THREADS"] = str(args.t)
+os.environ["OMP_NUM_THREADS"] = str(args.t)
+os.environ["OPENBLAS_NUM_THREADS"] = str(args.t)
+os.environ["VECLIB_MAXIMUM_THREADS"] = str(args.t)
+
+order = args.order
+static_cond = args.static_condensation
+
+meshfile = expanduser(
+    join(os.path.dirname(__file__), '../PyMFEM/', 'data', args.mesh))
+visualization = args.visualization
+device = args.device
+pa = args.partial_assembly
+
 import numpy as np
 import numba as nb
 import time
 
 # Import any of the MFEM Python modules
-import mfem.ser as mfem # Does this use OpenMP?
+import mfem.ser as mfem
 from mfem.common.arg_parser import ArgParser
 
 # Parla modules and decorators
@@ -50,6 +99,8 @@ from parla.tasks import spawn, TaskSpace
 
 # Check the hardware
 import psutil
+
+
 
 @nb.njit([nb.void(nb.float64[:], nb.int64[:,:], nb.float64[:,:], nb.float64[:,:,:],
                   nb.float64[:,:,:], nb.int64, nb.int64)], 
@@ -160,7 +211,7 @@ def run(order=1, static_cond=False,
     # Pre-processing step
     # Get the quad information and store basis functions at the element quad pts
     # Also need to store the local-to-global index mappings used in the scatter
-    intorder = 2*order # Order of the integration rule
+    intorder = order # Order of the integration rule
     num_elements = mesh.GetNE() # Number of mesh elements
     gdof = fespace.GetNDofs() # Number of global dof
     ldof = fespace.GetFE(0).GetDof() # Number of local dof
@@ -212,7 +263,7 @@ def run(order=1, static_cond=False,
     #-----------------------------------------------------------------------------
 
     # Specify a partition of the (global) list of elements
-    num_blocks = 4 # How many blocks do you want to use?! 
+    num_blocks = args.blocks
     elements_per_block = num_elements // num_blocks # Block size
     leftover_blocks = num_elements % num_blocks
     
@@ -248,10 +299,8 @@ def run(order=1, static_cond=False,
         # round-robin style of mapping to devices
         for i in range(num_blocks):
 
-            @spawn(taskid=ts[i], vcus=1/num_blocks)
+            @spawn(taskid=ts[i], vcus=load)
             def block_local_work():
-
-                print("i=",i,"\n")
 
                 # Need the offset for the element indices owned by this block
                 # This is the sum of all block sizes that came before it
@@ -364,39 +413,6 @@ def run(order=1, static_cond=False,
 
 
 if __name__ == "__main__":
-
-    parser = ArgParser(description='Ex1 (Laplace Problem)')
-    parser.add_argument('-m', '--mesh',
-                        default='star.mesh',
-                        action='store', type=str,
-                        help='Mesh file to use.')
-    parser.add_argument('-vis', '--visualization',
-                        action='store_true',
-                        help='Enable GLVis visualization')
-    parser.add_argument('-o', '--order',
-                        action='store', default=1, type=int,
-                        help="Finite element order (polynomial degree) or -1 for isoparametric space.")
-    parser.add_argument('-sc', '--static-condensation',
-                        action='store_true',
-                        help="Enable static condensation.")
-    parser.add_argument("-pa", "--partial-assembly",
-                        action='store_true',
-                        help="Enable Partial Assembly.")
-    parser.add_argument("-d", "--device",
-                        default="cpu", type=str,
-                        help="Device configuration string, see Device::Configure().")
-
-    args = parser.parse_args()
-    parser.print_options(args)
-
-    order = args.order
-    static_cond = args.static_condensation
-
-    meshfile = expanduser(
-        join(os.path.dirname(__file__), '../PyMFEM/', 'data', args.mesh))
-    visualization = args.visualization
-    device = args.device
-    pa = args.partial_assembly
 
     # First create the Parla context before spawning tasks
     with Parla():
