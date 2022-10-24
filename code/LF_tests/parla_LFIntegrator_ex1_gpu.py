@@ -110,14 +110,10 @@ from parla.tasks import spawn, TaskSpace
 import psutil
 
 
-#@cuda.jit([nb.void(nb.float64[:], nb.int64[:,:], nb.float64[:,:], nb.float64[:,:,:],
-#                  nb.float64[:,:,:], nb.int64, nb.int64)], 
-#                  nogil=True, cache=False, boundscheck=False)
-
 @nb.cuda.jit
 def inner_quad_kernel(bg_array, l2g_map, quad_wts, quad_pts, shape_pts, s_idx, e_idx):
     """
-    Kernel that performs the quadrature evaluations over a collection of elements 
+    CUDA kernel that performs the quadrature evaluations over a collection of elements 
     inside a particular block.
     """
 
@@ -128,12 +124,17 @@ def inner_quad_kernel(bg_array, l2g_map, quad_wts, quad_pts, shape_pts, s_idx, e
     ldof = shape_pts.shape[2]
 
     # Initialize a local array to hold the integral over each element
-    local_array = cp.zeros((ldof))
+    # Each thread will use this array as scratchpad memory
+    local_array = cuda.shared.array(ldof, nb.float64)
 
     # Assign one thread to each element of the mesh
-    j = nb.cuda.grid(1) # I think this value needs to be shifted by the start index...
+    tidx = nb.cuda.grid(1)
 
-    if j >= s_idx and j < e_idx:
+    # Since tidx is in [0, block_size[i]), we need to shift its value
+    # to a location in the global array
+    j = tidx + s_idx 
+
+    if j < e_idx:
 
         local_array[:] = 0.0
 
@@ -148,7 +149,7 @@ def inner_quad_kernel(bg_array, l2g_map, quad_wts, quad_pts, shape_pts, s_idx, e
         # This needs to be done using atomics
         for l in range(ldof):
 
-            nb.cuda.atomic.add(bg_array, l2g_map[j,l], local_array[j])
+            nb.cuda.atomic.add(bg_array, l2g_map[j,l], local_array[l])
 
     return None
 
@@ -292,21 +293,23 @@ def run(order=1, static_cond=False,
     block_sizes = elements_per_block*np.ones([num_blocks], dtype=np.int64)
     block_sizes[0:leftover_blocks] += 1
 
-    # Copy the block sizes to the device
+    # Precompute the offsets for the blocks
+    # This tells us the starting index for each block
+    block_offsets = np.zeros([num_blocks], dtype=np.int64)
+    for i in range(num_blocks):
+        block_offsets[i] = np.sum(block_sizes[:i])
+
+    # Copy the block sizes and offsets to the device
     block_sizes_gpu = cp.asarray(block_sizes)
+    block_offsets_gpu = cp.asarray(block_offsets)
 
     print("Number of blocks: " + str(num_blocks))
     print("Number of left-over blocks: " + str(leftover_blocks))
     print("Elements per block:", block_sizes,"\n")
-  
-    # Create an array to hold the global data for the RHS
-    # This will not be accessed on the device
-    global_array = np.zeros([gdof])
 
     # To use the blocking scheme, we'll
     # also use another set of arrays that
     # hold partial sums of this global array
-    block_global_array = np.zeros([num_blocks, gdof])
     block_global_array_gpu = cp.zeros([num_blocks, gdof])
 
     parla_start = time.perf_counter()
@@ -324,11 +327,11 @@ def run(order=1, static_cond=False,
             @spawn(taskid=ts[i], placement=gpu[0])
             def block_local_work():
 
-                # Need the offset for the element indices owned by this block
-                # This is the sum of all block sizes that came before it
-                s_idx = np.sum(block_sizes[:i])
-                e_idx = s_idx + block_sizes[i]
+                # Start and end indices for the elements owned by this block
+                s_idx = block_offsets_gpu[i]
+                e_idx = s_idx + block_sizes_gpu[i]
 
+                # blocks_per_grid = ceil(block_sizes[i]/threads_per_block)
                 threads_per_block = 256
                 blocks_per_grid = (block_sizes[i] + (threads_per_block - 1)) // threads_per_block
 
@@ -337,7 +340,7 @@ def run(order=1, static_cond=False,
                                   quad_wts_gpu, quad_pts_gpu, shape_pts_gpu, 
                                   s_idx, e_idx)
 
-                nb.cuda.synchronize()
+                cuda.synchronize()
 
         # Barrier for the task space associated with the loop over blocks
         await ts
