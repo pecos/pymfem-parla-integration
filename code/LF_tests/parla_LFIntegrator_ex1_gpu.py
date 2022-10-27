@@ -58,7 +58,6 @@ parser.add_argument('-ngpus', default=1, type=int,
                     help="How many gpus to use")
 
 args = parser.parse_args()
-#parser.print_options(args)
 print(args)
 
 order = args.order
@@ -109,13 +108,19 @@ from parla.tasks import spawn, TaskSpace
 # Check the hardware
 import psutil
 
+# Set an upper limit on the number of active basis functions on a given element
+max_ldof = 10
 
-@nb.cuda.jit
+# Why is there a weird type error here if I use a signature list?
+#@cuda.jit([nb.void(nb.float64[:], nb.int64[:,:], nb.float64[:,:], nb.float64[:,:,:], nb.float64[:,:,:], nb.int64, nb.int64)])
+@cuda.jit
 def inner_quad_kernel(bg_array, l2g_map, quad_wts, quad_pts, shape_pts, s_idx, e_idx):
     """
     CUDA kernel that performs the quadrature evaluations over a collection of elements 
     inside a particular block.
     """
+    # Get the number of dimensions
+    dim = quad_pts.shape[2]
 
     # Get the number of quad pts
     num_qp = quad_wts.shape[1]
@@ -123,33 +128,36 @@ def inner_quad_kernel(bg_array, l2g_map, quad_wts, quad_pts, shape_pts, s_idx, e
     # Get the number of active dof within each element (assumed to be the same)
     ldof = shape_pts.shape[2]
 
-    # Initialize a local array to hold the integral over each element
+    # Initialize a local integral array to hold the integral over each element
     # Each thread will use this array as scratchpad memory
-    local_array = cuda.shared.array(ldof, nb.float64)
+    local_integral = cuda.local.array(max_ldof, nb.float64)
+
+    # Integration point array
+    # Each thread will have its own copy
+    ip = cuda.local.array(max_dim, nb.float64)
 
     # Assign one thread to each element of the mesh
-    tidx = nb.cuda.grid(1)
+    t_idx = nb.cuda.grid(1)
 
-    # Since tidx is in [0, block_size[i]), we need to shift its value
+    # Since t_idx is in [0, block_size[i]), we need to shift its value
     # to a location in the global array
-    j = tidx + s_idx 
+    j = t_idx + s_idx 
 
     if j < e_idx:
 
-        local_array[:] = 0.0
+        local_integral[:ldof] = 0.0
 
+        # Quadrature evaluation (with f = 1)
         for k in range(num_qp):
+            quad_pt = quad_pts[j,k]
 
-            ip = quad_pts[j,k,:] # Integration point from the rule
-            shape = shape_pts[j,k,:] # Active basis functions at this integration point
-            wt = quad_wts[j,k] # Quadrature weight
-            local_array[:] += wt*shape[:] # Quadrature evaluation (with f = 1)
+            for l in range(ldof):
+                local_integral[l] += quad_wts[j,k]*shape_pts[j,k,l] 
 
-        # Accumulate the local array into the relevant entries of the block-wise global array
+        # Accumulate the local integral into the relevant entries of the block-wise global array
         # This needs to be done using atomics
         for l in range(ldof):
-
-            nb.cuda.atomic.add(bg_array, l2g_map[j,l], local_array[l])
+            cuda.atomic.add(bg_array, l2g_map[j,l], local_integral[l])
 
     return None
 
@@ -285,7 +293,7 @@ def run(order=1, static_cond=False,
     #-----------------------------------------------------------------------------
 
     # Specify a partition of the (global) list of elements
-    num_blocks = 4 # How many blocks do you want to use?! 
+    num_blocks = 2 # How many blocks do you want to use?! 
     elements_per_block = num_elements // num_blocks # Block size
     leftover_blocks = num_elements % num_blocks
     
@@ -293,8 +301,8 @@ def run(order=1, static_cond=False,
     block_sizes = elements_per_block*np.ones([num_blocks], dtype=np.int64)
     block_sizes[0:leftover_blocks] += 1
 
-    # Precompute the offsets for the blocks
-    # This tells us the starting index for each block
+    # Precompute the offsets for the element blocks
+    # This tells us the starting index for each block of elements
     block_offsets = np.zeros([num_blocks], dtype=np.int64)
     for i in range(num_blocks):
         block_offsets[i] = np.sum(block_sizes[:i])
@@ -328,17 +336,17 @@ def run(order=1, static_cond=False,
             def block_local_work():
 
                 # Start and end indices for the elements owned by this block
-                s_idx = block_offsets_gpu[i]
-                e_idx = s_idx + block_sizes_gpu[i]
+                #s_idx = block_offsets_gpu[i] # Why do these commands produce weird 0-D arrays of int64?
+                #e_idx = s_idx + block_sizes_gpu[i]
+                s_idx = np.sum(block_sizes[:i])
+                e_idx = s_idx + block_sizes[i]
 
                 # blocks_per_grid = ceil(block_sizes[i]/threads_per_block)
-                threads_per_block = 256
-                blocks_per_grid = (block_sizes[i] + (threads_per_block - 1)) // threads_per_block
+                threads_per_block = 256 # Need to eventually increase the elements. Otherewise we have low occupancy
+                blocks_per_grid = block_sizes[i] // threads_per_block + 1
 
                 # Apply the Numba kernel to the block data
-                inner_quad_kernel[blocks_per_grid, threads_per_block](block_global_array_gpu[i,:], l2g_map_gpu, 
-                                  quad_wts_gpu, quad_pts_gpu, shape_pts_gpu, 
-                                  s_idx, e_idx)
+                inner_quad_kernel[blocks_per_grid, threads_per_block](block_global_array_gpu[i,:], l2g_map_gpu, quad_wts_gpu, quad_pts_gpu, shape_pts_gpu, s_idx, e_idx)
 
                 cuda.synchronize()
 
