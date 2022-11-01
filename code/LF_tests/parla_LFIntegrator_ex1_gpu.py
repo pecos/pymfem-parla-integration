@@ -55,7 +55,9 @@ parser.add_argument("-d", "--device",
                     default="cpu", type=str,
                     help="Device configuration string, see Device::Configure().")
 parser.add_argument('-ngpus', default=1, type=int, 
-                    help="How many gpus to use")
+                    help="Number of gpus to use")
+parser.add_argument('-blocks', type=int, 
+                    default=1, help="Number of element blocks/partitions.")
 parser.add_argument('-trials', type=int,
                     default=1, help="Number of repititions for timing regions of code.")
 
@@ -72,6 +74,7 @@ visualization = args.visualization
 device = args.device
 pa = args.partial_assembly
 ngpus = args.ngpus
+num_blocks = args.blocks
 num_trials = args.trials
 
 # Specify information about the devices
@@ -114,8 +117,13 @@ import psutil
 # Set an upper limit on the number of active basis functions on a given element
 max_ldof = 8
 
+# Set an upper limit on the number of dimensions for the problem
+max_dim = 3
+
 @cuda.jit
-def inner_quad_kernel(bg_array, l2g_map, quad_wts, quad_pts, shape_pts, s_idx, e_idx):
+def inner_quad_kernel(block_element_array, l2g_map, 
+                      quad_wts, quad_pts, shape_pts, 
+                      s_idx, e_idx):
     """
     CUDA kernel that performs the quadrature evaluations over a collection of elements 
     inside a particular block.
@@ -135,7 +143,10 @@ def inner_quad_kernel(bg_array, l2g_map, quad_wts, quad_pts, shape_pts, s_idx, e
 
     # Integration point array
     # Each thread will have its own copy
-    ip = cuda.local.array(max_dim, nb.float64)
+    #
+    # Since the function f will be evaluated outside, we
+    # assume that we don't need to store this here
+    #quad_pt = cuda.local.array(max_dim, nb.float64)
 
     # Assign one thread to each element of the mesh
     t_idx = nb.cuda.grid(1)
@@ -146,11 +157,15 @@ def inner_quad_kernel(bg_array, l2g_map, quad_wts, quad_pts, shape_pts, s_idx, e
 
     if j < e_idx:
 
-        local_integral[:ldof] = 0.0
+        # Initialize the local integral over each active dof
+        for l in range(ldof): 
+            local_integral[l] = 0.0
 
         # Quadrature evaluation (with f = 1)
         for k in range(num_qp):
-            quad_pt = quad_pts[j,k]
+
+            #for d in range(dim):
+            #    quad_pt[d] = quad_pts[j,k,d]
 
             for l in range(ldof):
                 local_integral[l] += quad_wts[j,k]*shape_pts[j,k,l] 
@@ -158,7 +173,7 @@ def inner_quad_kernel(bg_array, l2g_map, quad_wts, quad_pts, shape_pts, s_idx, e
         # Accumulate the local integral into the relevant entries of the block-wise global array
         # This needs to be done using atomics
         for l in range(ldof):
-            cuda.atomic.add(bg_array, l2g_map[j,l], local_integral[l])
+            cuda.atomic.add(block_element_array, l2g_map[j,l], local_integral[l])
 
     return None
 
@@ -182,7 +197,12 @@ def run(order=1, static_cond=False,
     #      'ref_levels' of uniform refinement. We choose 'ref_levels' to be the
     #      largest number that gives a final mesh with no more than 50,000
     #      elements.
-    ref_levels = int(np.floor(np.log(50000./mesh.GetNE())/np.log(2.)/dim))
+    #ref_levels = int(np.floor(np.log(50000./mesh.GetNE())/np.log(2.)/dim))
+    #ref_levels = int(np.floor(np.log(200000./mesh.GetNE())/np.log(2.)/dim))
+
+    ref_levels = 7
+
+    print("ref_levels:", ref_levels, "\n")
 
     for x in range(ref_levels):
         mesh.UniformRefinement()
@@ -301,40 +321,36 @@ def run(order=1, static_cond=False,
     #-----------------------------------------------------------------------------
 
     # Specify a partition of the (global) list of elements
-    num_blocks = 2 # How many blocks do you want to use?! 
     elements_per_block = num_elements // num_blocks # Block size
     leftover_blocks = num_elements % num_blocks
     
     # Adjust the number of elements if the block size doesn't divide the elements evenly
-    block_sizes = elements_per_block*np.ones([num_blocks], dtype=np.int64)
-    block_sizes[0:leftover_blocks] += 1
+    element_block_sizes = elements_per_block*np.ones([num_blocks], dtype=np.int64)
+    element_block_sizes[0:leftover_blocks] += 1
 
     print("Number of blocks: " + str(num_blocks))
     print("Number of left-over blocks: " + str(leftover_blocks))
-    print("Elements per block:", block_sizes,"\n")
+    print("Elements per block:", element_block_sizes,"\n")
 
     # To use the blocking scheme, we'll
     # also use another set of arrays that
     # hold partial sums of this global array
-    block_global_array_gpu = cp.zeros([num_blocks, gdof])
+    element_block_global_array_gpu = cp.zeros([num_blocks, gdof])
 
 
     # Launch a dummy call to the quadrature kernel to
     # compile prior to the timed region
     # For this, we will just use the first block
     s_idx = 0
-    e_idx = block_sizes[0]
+    e_idx = element_block_sizes[0]
 
     threads_per_block = 256
-    blocks_per_grid = block_sizes[0] // threads_per_block + 1
+    blocks_per_grid = element_block_sizes[0] // threads_per_block + 1
 
     # Launch the dummy kernel
-    inner_quad_kernel[blocks_per_grid, threads_per_block](block_global_array_gpu[0,:], l2g_map_gpu,
+    inner_quad_kernel[blocks_per_grid, threads_per_block](element_block_global_array_gpu[0,:], l2g_map_gpu,
                                                           quad_wts_gpu, quad_pts_gpu, shape_pts_gpu,
                                                           s_idx, e_idx)
-
-    # Zero-out the data from the dummy call for correctness
-    block_global_array_gpu[0,:] = 0.0
 
     # Define the main task for parla
     @spawn(placement=cpu)
@@ -346,6 +362,9 @@ def run(order=1, static_cond=False,
         parla_times = np.zeros([num_trials]) # Store the times for statistics
 
         for trial_idx in range(num_trials):
+
+            # Need to zero out the data from the previous experiment
+            element_block_global_array_gpu[:,:] = 0.0
 
             parla_start = time.perf_counter()
 
@@ -360,14 +379,14 @@ def run(order=1, static_cond=False,
                     # Start and end indices for the elements owned by this block
                     # If we use the CuPy arrays for this, the sum returns a 0D array
                     # For now, just compute this with NumPy
-                    s_idx = np.sum(block_sizes[:i])
-                    e_idx = s_idx + block_sizes[i]
+                    s_idx = np.sum(element_block_sizes[:i])
+                    e_idx = s_idx + element_block_sizes[i]
 
-                    threads_per_block = 256 # Need to eventually increase the elements. Otherewise we have low occupancy
-                    blocks_per_grid = block_sizes[i] // threads_per_block + 1
+                    threads_per_block = 1024 # Need to eventually increase the elements. Otherewise we have low occupancy
+                    blocks_per_grid = element_block_sizes[i] // threads_per_block + 1
 
                     # Apply the Numba kernel to the block data
-                    inner_quad_kernel[blocks_per_grid, threads_per_block](block_global_array_gpu[i,:], l2g_map_gpu, 
+                    inner_quad_kernel[blocks_per_grid, threads_per_block](element_block_global_array_gpu[i,:], l2g_map_gpu, 
                                                                           quad_wts_gpu, quad_pts_gpu, shape_pts_gpu, 
                                                                           s_idx, e_idx)
 
@@ -378,14 +397,14 @@ def run(order=1, static_cond=False,
 
             # Perform the reduction across the blocks and store in the global_array
             # This is done on the device
-            global_array_gpu = cp.sum(block_global_array_gpu, axis=0)
+            element_global_array_gpu = cp.sum(element_block_global_array_gpu, axis=0)
 
             parla_end = time.perf_counter()
             parla_times[trial_idx] = parla_end - parla_start
 
             # Transfer the global array back to the host
             # Don't include this in the total time
-            global_array = cp.asnumpy(global_array_gpu)
+            element_global_array = cp.asnumpy(element_global_array_gpu)
 
         print("PyMFEM times (min, max, avg) [s]: ", pymfem_times.min(),",", 
                                                     pymfem_times.max(),",", 
@@ -398,14 +417,14 @@ def run(order=1, static_cond=False,
                                                   "\n",flush=True)
 
         #-----------------------------------------------------------------------------
-        # End of the Parla test
+        # End of the Parla test (the remainder checks for correctness)
         #-----------------------------------------------------------------------------
 
         # Define my own linear form for the RHS based on the above function
         # The 'FormLinearSystem' method, which performs additional manipulations
         # that simplify the RHS for the resulting linear system
         my_b = mfem.LinearForm(fespace)
-        my_b.Assign(global_array)
+        my_b.Assign(element_global_array)
 
         # 7. Define the solution vector x as a finite element grid function
         #   corresponding to fespace. Initialize x with initial guess of zero,

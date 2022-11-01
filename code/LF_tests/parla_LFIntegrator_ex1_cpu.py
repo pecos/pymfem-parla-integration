@@ -33,7 +33,7 @@ import os
 from os.path import expanduser, join
 import argparse
 import mkl
-import gil_load
+#import gil_load
 
 # Parse the command line information
 parser = argparse.ArgumentParser(description='Ex1 (Laplace Problem)')
@@ -56,10 +56,8 @@ parser.add_argument("-pa", "--partial-assembly",
 parser.add_argument("-d", "--device",
                     default="cpu", type=str,
                     help="Device configuration string, see Device::Configure().")
-parser.add_argument('-threads', type=int, 
-                    default=1, help="Number of threads.")
 parser.add_argument('-blocks', type=int, 
-                    default=1, help="Number of blocks/partitions.")
+                    default=1, help="Number of parallel blocks/partitions. Assume 1 thread per block.")
 parser.add_argument('-trials', type=int, 
                     default=1, help="Number of repititions for timing regions of code.")
 
@@ -79,12 +77,14 @@ pa = args.partial_assembly
 # Initialize the environment for the GIL tracker
 #gil_load.init()
 
-load = 1.0/args.blocks
-mkl.set_num_threads(args.threads)
-os.environ["NUMEXPR_NUM_THREADS"] = str(args.threads)
-os.environ["OMP_NUM_THREADS"] = str(args.threads)
-os.environ["OPENBLAS_NUM_THREADS"] = str(args.threads)
-os.environ["VECLIB_MAXIMUM_THREADS"] = str(args.threads)
+load = 1.0/args.blocks # We assume one thread per block
+
+# Use only one thread inside the task
+mkl.set_num_threads(1)
+os.environ["NUMEXPR_NUM_THREADS"] = str(1)
+os.environ["OMP_NUM_THREADS"] = str(1)
+os.environ["OPENBLAS_NUM_THREADS"] = str(1)
+os.environ["VECLIB_MAXIMUM_THREADS"] = str(1)
 
 num_trials = args.trials
 
@@ -113,11 +113,15 @@ import psutil
 @nb.njit([nb.void(nb.float64[:], nb.int64[:,:], nb.float64[:,:], nb.float64[:,:,:],
                   nb.float64[:,:,:], nb.int64, nb.int64)], 
                   nogil=True, cache=False, boundscheck=False)
-def inner_quad_kernel(bg_array, l2g_map, quad_wts, quad_pts, shape_pts, s_idx, e_idx):
+def inner_quad_kernel(block_element_array, l2g_map, 
+                      quad_wts, quad_pts, shape_pts, 
+                      s_idx, e_idx):
     """
-    Kernel that performs the quadrature evaluations over a collection of elements 
-    inside a particular block.
+    Kernel that performs the quadrature evaluations over a particular block of elements.
     """
+    # Get the dimension for the grid
+    dim = quad_pts.shape[2]
+
     # Get the number of quad pts
     num_qp = quad_wts.shape[1]
 
@@ -127,20 +131,29 @@ def inner_quad_kernel(bg_array, l2g_map, quad_wts, quad_pts, shape_pts, s_idx, e
     # Initialize a local array to hold the integral over each element
     local_integral = np.zeros((ldof))
 
-    # Loop over the mesh elements on this block and perform quadrature evaluations
+    # Create a local array to store a quadrature point
+    quad_pt = np.zeros((dim))
+
+    # Loop over the mesh elements on this block 
     for j in range(s_idx, e_idx):
 
-        local_integral[:] = 0.0
+        for l in range(ldof):
+            local_integral[l] = 0.0
 
         for k in range(num_qp):
 
-            ip = quad_pts[j,k,:] # Integration point from the rule
-            shape = shape_pts[j,k,:] # Active basis functions at this integration point
-            wt = quad_wts[j,k] # Quadrature weight
-            local_integral[:] += wt*shape[:] # Quadrature evaluation (with f = 1)
+            # Integration point from the rule in (x,y,z) format
+            for d in range(dim):
+                quad_pt[d] = quad_pts[j,k,d]
 
-        # Accumulate the local integrals into the relevant entries of the block-wise global array
-        bg_array[l2g_map[j,:]] += local_integral[:]
+            # Quadrature evaluation (with f = 1)
+            for l in range(ldof):
+                local_integral[l] += quad_wts[j,k]*shape_pts[j,k,l] 
+
+        # Accumulate the local integrals into the relevant entries 
+        # of the block-wise global array
+        for l in range(ldof):
+            block_element_array[l2g_map[j,l]] += local_integral[l]
 
     return None
 
@@ -164,7 +177,9 @@ def run(order=1, static_cond=False,
     #      'ref_levels' of uniform refinement. We choose 'ref_levels' to be the
     #      largest number that gives a final mesh with no more than 50,000
     #      elements.
-    ref_levels = int(np.floor(np.log(50000./mesh.GetNE())/np.log(2.)/dim))
+    #ref_levels = int(np.floor(np.log(50000./mesh.GetNE())/np.log(2.)/dim))
+
+    ref_levels = 7
 
     for x in range(ref_levels):
         mesh.UniformRefinement()
@@ -202,10 +217,9 @@ def run(order=1, static_cond=False,
     # 6. Set up the linear form b(.) which corresponds to the right-hand side of
     #   the FEM linear system, which in this case is (1,phi_i) where phi_i are
     #   the basis functions in the finite element fespace.
-    trial_idx = 0
-    pymfem_time = 0.0 # Total time spent in pymfem
+    pymfem_times = np.zeros([num_trials]) # Store the times for statistics
 
-    while trial_idx < num_trials:
+    for trial_idx in range(num_trials):
 
         pymfem_start = time.perf_counter()
 
@@ -216,8 +230,7 @@ def run(order=1, static_cond=False,
 
         pymfem_end = time.perf_counter()
 
-        pymfem_time += pymfem_end - pymfem_start
-        trial_idx += 1
+        pymfem_times[trial_idx] = pymfem_end - pymfem_start
 
     #-----------------------------------------------------------------------------
     # Version based on Parla (naive approach)
@@ -226,7 +239,7 @@ def run(order=1, static_cond=False,
     # Pre-processing step
     # Get the quad information and store basis functions at the element quad pts
     # Also need to store the local-to-global index mappings used in the scatter
-    intorder = order # Order of the integration rule
+    intorder = 2*order # Order of the integration rule
     num_elements = mesh.GetNE() # Number of mesh elements
     gdof = fespace.GetNDofs() # Number of global dof
     ldof = fespace.GetFE(0).GetDof() # Number of local dof
@@ -283,57 +296,56 @@ def run(order=1, static_cond=False,
     leftover_blocks = num_elements % num_blocks
     
     # Adjust the number of elements if the block size doesn't divide the elements evenly
-    block_sizes = elements_per_block*np.ones([num_blocks], dtype=np.int64)
-    block_sizes[0:leftover_blocks] += 1
+    element_block_sizes = elements_per_block*np.ones([num_blocks], dtype=np.int64)
+    element_block_sizes[0:leftover_blocks] += 1
     
     print("Number of blocks: " + str(num_blocks))
     print("Number of left-over blocks: " + str(leftover_blocks))
-    print("Elements per block:", block_sizes,"\n")
+    print("Elements per block:", element_block_sizes,"\n")
   
     # Create an array to hold the global data for the RHS
-    global_array = np.zeros([gdof])
+    element_global_array = np.zeros([gdof])
 
     # To use the blocking scheme, we'll
     # also use another set of arrays that
     # hold partial sums of this global array
-    block_global_array = np.zeros([num_blocks, gdof])
+    element_block_global_array = np.zeros([num_blocks, gdof])
 
     # Define the main task for parla
     @spawn(placement=cpu)
     async def LFIntegration_task():
 
-        trial_idx = 0
         parla_time = 0.0 # Total time spent in the parla tasks (includes sleep)
 
         # Create the task space first
         ts = TaskSpace("LFTaskSpace")
 
+        parla_times = np.zeros([num_trials]) # Store the times for statistics
+
         # Start tracking the GIL
         #gil_load.start()
 
-        while trial_idx < num_trials:
+        for trial_idx in range(num_trials):
 
-            block_global_array[:,:] = 0.0 # Zero out the entries
+            element_block_global_array[:,:] = 0.0 # Zero out the data from the previous run
 
             parla_start = time.perf_counter() # Only measure the time for tasks
 
             # Next we loop over each block which partitions the element indices
-            # Each block will form a task, so we can control granularity by choosing
-            # the number of blocks carefully. In most cases, this will be the number of
-            # devices. It may be possible to use more blocks than devices if we use a
-            # round-robin style of mapping to devices
             for i in range(num_blocks):
 
-                @spawn(taskid=ts[i], vcus=load)
+                # It's really important that the taskids be unique
+                # For this, we include another index for the trial
+                @spawn(taskid=ts[trial_idx,i], vcus=load)
                 def block_local_work():
 
                     # Need the offset for the element indices owned by this block
                     # This is the sum of all block sizes that came before it
-                    s_idx = np.sum(block_sizes[:i])
-                    e_idx = s_idx + block_sizes[i]
+                    s_idx = np.sum(element_block_sizes[:i])
+                    e_idx = s_idx + element_block_sizes[i]
 
                     # Apply the Numba kernel to the block data
-                    inner_quad_kernel(block_global_array[i,:], l2g_map, 
+                    inner_quad_kernel(element_block_global_array[i,:], l2g_map, 
                                       quad_wts, quad_pts, shape_pts, 
                                       s_idx, e_idx)
 
@@ -341,35 +353,37 @@ def run(order=1, static_cond=False,
             await ts 
 
             # Perform the reduction across the blocks and store in the global_array
-            global_array = np.sum(block_global_array, axis=0)
+            element_global_array = np.sum(element_block_global_array, axis=0)
 
             parla_end = time.perf_counter()
-
-            parla_time += parla_end - parla_start
-
-            trial_idx += 1
-
-            print(trial_idx)
+            parla_times[trial_idx] = parla_end - parla_start
 
         # Stop tracking the GIL
         #gil_load.stop()
 
         # Print the GIL data
         #stats = gil_load.get()
-        #print(gil_load.format(stats))
+        #print(gil_load.format(stats),"\n")
 
-        print("Average PyMFEM time (s): ", pymfem_time/num_trials, "\n",flush=True)
-        print("Average Parla time (s): ", parla_time/num_trials, "\n",flush=True)
+        print("PyMFEM times (min, max, avg) [s]: ", pymfem_times.min(),",",
+                                                    pymfem_times.max(),",",
+                                                    pymfem_times.mean(),
+                                                    "\n",flush=True)
+
+        print("Parla times (min, max, avg) [s] ", parla_times.min(),",",
+                                                  parla_times.max(),",",
+                                                  parla_times.mean(),
+                                                  "\n",flush=True)
 
         #-----------------------------------------------------------------------------
-        # End of the Parla test
+        # End of the Parla test (the remainder checks for correctness)
         #-----------------------------------------------------------------------------
 
         # Define my own linear form for the RHS based on the above function
         # The 'FormLinearSystem' method, which performs additional manipulations
         # that simplify the RHS for the resulting linear system
         my_b = mfem.LinearForm(fespace)
-        my_b.Assign(global_array)
+        my_b.Assign(element_global_array)
 
         # 7. Define the solution vector x as a finite element grid function
         #   corresponding to fespace. Initialize x with initial guess of zero,
