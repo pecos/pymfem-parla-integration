@@ -56,9 +56,11 @@ parser.add_argument("-d", "--device",
                     help="Device configuration string, see Device::Configure().")
 parser.add_argument('-ngpus', default=1, type=int, 
                     help="How many gpus to use")
+parser.add_argument('-trials', type=int,
+                    default=1, help="Number of repititions for timing regions of code.")
 
 args = parser.parse_args()
-print(args)
+print(args,"\n")
 
 order = args.order
 static_cond = args.static_condensation
@@ -68,8 +70,9 @@ meshfile = expanduser(
 
 visualization = args.visualization
 device = args.device
-ngpus = args.ngpus
 pa = args.partial_assembly
+ngpus = args.ngpus
+num_trials = args.trials
 
 # Specify information about the devices
 cuda_visible_devices = os.environ.get('CUDA_VISIBLE_DEVICES')
@@ -109,10 +112,8 @@ from parla.tasks import spawn, TaskSpace
 import psutil
 
 # Set an upper limit on the number of active basis functions on a given element
-max_ldof = 10
+max_ldof = 8
 
-# Why is there a weird type error here if I use a signature list?
-#@cuda.jit([nb.void(nb.float64[:], nb.int64[:,:], nb.float64[:,:], nb.float64[:,:,:], nb.float64[:,:,:], nb.int64, nb.int64)])
 @cuda.jit
 def inner_quad_kernel(bg_array, l2g_map, quad_wts, quad_pts, shape_pts, s_idx, e_idx):
     """
@@ -219,17 +220,24 @@ def run(order=1, static_cond=False,
     # 6. Set up the linear form b(.) which corresponds to the right-hand side of
     #   the FEM linear system, which in this case is (1,phi_i) where phi_i are
     #   the basis functions in the finite element fespace.
-    pymfem_start = time.perf_counter()
+    pymfem_times = np.zeros([num_trials]) # Store the times for statistics 
 
-    b = mfem.LinearForm(fespace)
-    one = mfem.ConstantCoefficient(1.0)
-    b.AddDomainIntegrator(mfem.DomainLFIntegrator(one))
-    b.Assemble()
+    for trial_idx in range(num_trials):
 
-    pymfem_end = time.perf_counter()
+        pymfem_start = time.perf_counter()
+
+        b = mfem.LinearForm(fespace)
+        one = mfem.ConstantCoefficient(1.0)
+        b.AddDomainIntegrator(mfem.DomainLFIntegrator(one))
+        b.Assemble()
+
+        pymfem_end = time.perf_counter()
+
+        pymfem_times[trial_idx] = pymfem_end - pymfem_start
+
 
     #-----------------------------------------------------------------------------
-    # Version based on Parla (naive approach)
+    # Version based on Parla
     #-----------------------------------------------------------------------------
 
     # Pre-processing step
@@ -301,16 +309,6 @@ def run(order=1, static_cond=False,
     block_sizes = elements_per_block*np.ones([num_blocks], dtype=np.int64)
     block_sizes[0:leftover_blocks] += 1
 
-    # Precompute the offsets for the element blocks
-    # This tells us the starting index for each block of elements
-    block_offsets = np.zeros([num_blocks], dtype=np.int64)
-    for i in range(num_blocks):
-        block_offsets[i] = np.sum(block_sizes[:i])
-
-    # Copy the block sizes and offsets to the device
-    block_sizes_gpu = cp.asarray(block_sizes)
-    block_offsets_gpu = cp.asarray(block_offsets)
-
     print("Number of blocks: " + str(num_blocks))
     print("Number of left-over blocks: " + str(leftover_blocks))
     print("Elements per block:", block_sizes,"\n")
@@ -320,7 +318,23 @@ def run(order=1, static_cond=False,
     # hold partial sums of this global array
     block_global_array_gpu = cp.zeros([num_blocks, gdof])
 
-    parla_start = time.perf_counter()
+
+    # Launch a dummy call to the quadrature kernel to
+    # compile prior to the timed region
+    # For this, we will just use the first block
+    s_idx = 0
+    e_idx = block_sizes[0]
+
+    threads_per_block = 256
+    blocks_per_grid = block_sizes[0] // threads_per_block + 1
+
+    # Launch the dummy kernel
+    inner_quad_kernel[blocks_per_grid, threads_per_block](block_global_array_gpu[0,:], l2g_map_gpu,
+                                                          quad_wts_gpu, quad_pts_gpu, shape_pts_gpu,
+                                                          s_idx, e_idx)
+
+    # Zero-out the data from the dummy call for correctness
+    block_global_array_gpu[0,:] = 0.0
 
     # Define the main task for parla
     @spawn(placement=cpu)
@@ -329,41 +343,59 @@ def run(order=1, static_cond=False,
         # Create the task space first
         ts = TaskSpace("LFTaskSpace")
 
-        # Next we loop over each block which partitions the element indices
-        for i in range(num_blocks):
+        parla_times = np.zeros([num_trials]) # Store the times for statistics
 
-            @spawn(taskid=ts[i], placement=gpu[0])
-            def block_local_work():
+        for trial_idx in range(num_trials):
 
-                # Start and end indices for the elements owned by this block
-                #s_idx = block_offsets_gpu[i] # Why do these commands produce weird 0-D arrays of int64?
-                #e_idx = s_idx + block_sizes_gpu[i]
-                s_idx = np.sum(block_sizes[:i])
-                e_idx = s_idx + block_sizes[i]
+            parla_start = time.perf_counter()
 
-                # blocks_per_grid = ceil(block_sizes[i]/threads_per_block)
-                threads_per_block = 256 # Need to eventually increase the elements. Otherewise we have low occupancy
-                blocks_per_grid = block_sizes[i] // threads_per_block + 1
+            # Next we loop over each block which partitions the element indices
+            for i in range(num_blocks):
 
-                # Apply the Numba kernel to the block data
-                inner_quad_kernel[blocks_per_grid, threads_per_block](block_global_array_gpu[i,:], l2g_map_gpu, quad_wts_gpu, quad_pts_gpu, shape_pts_gpu, s_idx, e_idx)
+                # It's really important that each taskid is unique
+                # That is why we include a second index for the trial
+                @spawn(taskid=ts[trial_idx,i], placement=gpu[0])
+                def block_local_work():
 
-                cuda.synchronize()
+                    # Start and end indices for the elements owned by this block
+                    # If we use the CuPy arrays for this, the sum returns a 0D array
+                    # For now, just compute this with NumPy
+                    s_idx = np.sum(block_sizes[:i])
+                    e_idx = s_idx + block_sizes[i]
 
-        # Barrier for the task space associated with the loop over blocks
-        await ts
+                    threads_per_block = 256 # Need to eventually increase the elements. Otherewise we have low occupancy
+                    blocks_per_grid = block_sizes[i] // threads_per_block + 1
 
-        # Perform the reduction across the blocks and store in the global_array
-        # This is done on the device
-        global_array_gpu = cp.sum(block_global_array_gpu, axis=0)
+                    # Apply the Numba kernel to the block data
+                    inner_quad_kernel[blocks_per_grid, threads_per_block](block_global_array_gpu[i,:], l2g_map_gpu, 
+                                                                          quad_wts_gpu, quad_pts_gpu, shape_pts_gpu, 
+                                                                          s_idx, e_idx)
 
-        parla_end = time.perf_counter()
+                    cuda.synchronize() # For numba, we need this!
 
-        # Transfer the global array back to the host
-        global_array = cp.asnumpy(global_array_gpu)
+            # Barrier for the task space associated with the loop over blocks
+            await ts
 
-        print("PyMFEM time (s): ", pymfem_end - pymfem_start, "\n",flush=True)
-        print("Parla time (s): ", parla_end - parla_start, "\n",flush=True)
+            # Perform the reduction across the blocks and store in the global_array
+            # This is done on the device
+            global_array_gpu = cp.sum(block_global_array_gpu, axis=0)
+
+            parla_end = time.perf_counter()
+            parla_times[trial_idx] = parla_end - parla_start
+
+            # Transfer the global array back to the host
+            # Don't include this in the total time
+            global_array = cp.asnumpy(global_array_gpu)
+
+        print("PyMFEM times (min, max, avg) [s]: ", pymfem_times.min(),",", 
+                                                    pymfem_times.max(),",", 
+                                                    pymfem_times.mean(),
+                                                    "\n",flush=True)
+
+        print("Parla times (min, max, avg) [s] ", parla_times.min(),",",
+                                                  parla_times.max(),",",
+                                                  parla_times.mean(),
+                                                  "\n",flush=True)
 
         #-----------------------------------------------------------------------------
         # End of the Parla test
