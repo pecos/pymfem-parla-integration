@@ -1,6 +1,11 @@
 '''
    MFEM example 1 (converted from ex1.cpp)
 
+   Here we demonstrate the integration of Parla
+   with MFEM on a single GPU. The specific task
+   is the evaluation of a linear form which
+   becomes the RHS for the linear system.
+
    See c++ version in the MFEM library for more detail
 
    How to run:
@@ -54,8 +59,6 @@ parser.add_argument("-pa", "--partial-assembly",
 parser.add_argument("-d", "--device",
                     default="cpu", type=str,
                     help="Device configuration string, see Device::Configure().")
-parser.add_argument('-ngpus', default=1, type=int, 
-                    help="Number of gpus to use")
 parser.add_argument('-blocks', type=int, 
                     default=1, help="Number of element blocks/partitions.")
 parser.add_argument('-trials', type=int,
@@ -73,9 +76,9 @@ meshfile = expanduser(
 visualization = args.visualization
 device = args.device
 pa = args.partial_assembly
-ngpus = args.ngpus
 num_blocks = args.blocks
 num_trials = args.trials
+ngpus = 1 # We fix the problem in this test to use one GPU
 
 # Specify information about the devices
 cuda_visible_devices = os.environ.get('CUDA_VISIBLE_DEVICES')
@@ -87,7 +90,7 @@ else:
     cuda_visible_devices = cuda_visible_devices.strip().split(',')
     cuda_visible_devices = list(map(int, cuda_visible_devices))
 
-gpus = cuda_visible_devices[:args.ngpus]
+gpus = cuda_visible_devices[:ngpus]
 os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, gpus))
 
 import numpy as np
@@ -242,13 +245,19 @@ def run(order=1, static_cond=False,
     #   the basis functions in the finite element fespace.
     pymfem_times = np.zeros([num_trials]) # Store the times for statistics 
 
+    b = mfem.LinearForm(fespace)
+    one = mfem.ConstantCoefficient(1.0)
+    b.AddDomainIntegrator(mfem.DomainLFIntegrator(one))
+
     for trial_idx in range(num_trials):
 
+        # Reset the value of the linear form
+        # This is needed for correctness
+        b.Assign(0.0)
+
+        # Only time the assemble function
         pymfem_start = time.perf_counter()
 
-        b = mfem.LinearForm(fespace)
-        one = mfem.ConstantCoefficient(1.0)
-        b.AddDomainIntegrator(mfem.DomainLFIntegrator(one))
         b.Assemble()
 
         pymfem_end = time.perf_counter()
@@ -261,6 +270,9 @@ def run(order=1, static_cond=False,
     #-----------------------------------------------------------------------------
 
     # Pre-processing step
+
+    precompute_start = time.perf_counter()
+
     # Get the quad information and store basis functions at the element quad pts
     # Also need to store the local-to-global index mappings used in the scatter
     intorder = 2*order # Order of the integration rule
@@ -308,7 +320,10 @@ def run(order=1, static_cond=False,
             quad_pts[i,j,:] = transip.GetDataArray() 
             shape_pts[i,j,:] = shape.GetDataArray()
 
+    precompute_end = time.perf_counter()
+
     print("Finished with pre-processing... Running Parla tasks\n")
+    print("Pre-compute time (s):", precompute_end - precompute_start,"\n")
 
     # Data transfer: Move the quadrature data to the current device
     quad_wts_gpu = cp.asarray(quad_wts)
@@ -344,7 +359,7 @@ def run(order=1, static_cond=False,
     s_idx = 0
     e_idx = element_block_sizes[0]
 
-    threads_per_block = 256
+    threads_per_block = 1024
     blocks_per_grid = element_block_sizes[0] // threads_per_block + 1
 
     # Launch the dummy kernel

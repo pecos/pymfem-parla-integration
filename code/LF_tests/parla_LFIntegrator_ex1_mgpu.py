@@ -1,10 +1,10 @@
 '''
    MFEM example 1 (converted from ex1.cpp)
 
-   In this version, we demonstrate the integration
-   of Parla and MFEM for CPU architectures. We use
-   the evaluation of the linear form as our test
-   problem.
+   Here we demonstrate the integration of Parla
+   with MFEM on multiple GPUs. The specific task
+   is the evaluation of a linear form which
+   becomes the RHS for the linear system.
 
    See c++ version in the MFEM library for more detail
 
@@ -34,13 +34,11 @@
                  -Delta u = 1 with homogeneous Dirichlet boundary conditions.
 
 '''
+import argparse
 import os
 from os.path import expanduser, join
-import argparse
-import mkl
-#import gil_load
 
-# Parse the command line information
+# Parse the command line options
 parser = argparse.ArgumentParser(description='Ex1 (Laplace Problem)')
 parser.add_argument('-m', '--mesh',
                     default='star.mesh',
@@ -61,9 +59,11 @@ parser.add_argument("-pa", "--partial-assembly",
 parser.add_argument("-d", "--device",
                     default="cpu", type=str,
                     help="Device configuration string, see Device::Configure().")
+parser.add_argument('-ngpus', type=int,
+                    default=1, help="Number of gpus to use.")
 parser.add_argument('-blocks', type=int, 
-                    default=1, help="Number of parallel blocks/partitions. Assume 1 thread per block.")
-parser.add_argument('-trials', type=int, 
+                    default=1, help="Number of element blocks/partitions.")
+parser.add_argument('-trials', type=int,
                     default=1, help="Number of repititions for timing regions of code.")
 
 args = parser.parse_args()
@@ -80,37 +80,42 @@ static_cond = args.static_condensation
 
 meshfile = expanduser(
     join(os.path.dirname(__file__), '../PyMFEM/', 'data', args.mesh))
+
 visualization = args.visualization
 device = args.device
 pa = args.partial_assembly
-
-# Initialize the environment for the GIL tracker
-#gil_load.init()
-
-load = 1.0/args.blocks # We assume one thread per block
-
-# Use only one thread inside the task
-mkl.set_num_threads(1)
-os.environ["NUMEXPR_NUM_THREADS"] = str(1)
-os.environ["OMP_NUM_THREADS"] = str(1)
-os.environ["OPENBLAS_NUM_THREADS"] = str(1)
-os.environ["VECLIB_MAXIMUM_THREADS"] = str(1)
-
+num_blocks = args.blocks
 num_trials = args.trials
+ngpus = args.ngpus 
+
+# Specify information about the devices
+cuda_visible_devices = os.environ.get('CUDA_VISIBLE_DEVICES')
+
+if cuda_visible_devices is None:
+    print("CUDA_VISIBLE_DEVICES is not set. Assuming 0-3")
+    cuda_visible_devices = list(range(4))
+else:
+    cuda_visible_devices = cuda_visible_devices.strip().split(',')
+    cuda_visible_devices = list(map(int, cuda_visible_devices))
+
+gpus = cuda_visible_devices[:ngpus]
+os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, gpus))
 
 import numpy as np
+import cupy as cp
 import numba as nb
+from numba import cuda
 import time
 
 # Import any of the MFEM Python modules
-import mfem.ser as mfem
+import mfem.ser as mfem 
 from mfem.common.arg_parser import ArgParser
 
 # Parla modules and decorators
-from parla import Parla
-
-# Here we focus on cpu devices
+# These should be imported after "CUDA_VISIBLE_DEVICES" is set
+from parla import Parla, get_all_devices, parray
 from parla.cpu import cpu
+from parla.cuda import gpu
 
 # Imports for the spawn decorator and TaskSpace declaration
 from parla.tasks import spawn, TaskSpace
@@ -118,18 +123,21 @@ from parla.tasks import spawn, TaskSpace
 # Check the hardware
 import psutil
 
+# Set an upper limit on the number of active basis functions on a given element
+max_ldof = 8
 
+# Set an upper limit on the number of dimensions for the problem
+max_dim = 3
 
-@nb.njit([nb.void(nb.float64[:], nb.int64[:,:], nb.float64[:,:], nb.float64[:,:,:],
-                  nb.float64[:,:,:], nb.int64, nb.int64)], 
-                  nogil=True, cache=False, boundscheck=False)
+@cuda.jit
 def inner_quad_kernel(block_element_array, l2g_map, 
                       quad_wts, quad_pts, shape_pts, 
                       s_idx, e_idx):
     """
-    Kernel that performs the quadrature evaluations over a particular block of elements.
+    CUDA kernel that performs the quadrature evaluations over a collection of elements 
+    inside a particular block.
     """
-    # Get the dimension for the grid
+    # Get the number of dimensions
     dim = quad_pts.shape[2]
 
     # Get the number of quad pts
@@ -138,39 +146,50 @@ def inner_quad_kernel(block_element_array, l2g_map,
     # Get the number of active dof within each element (assumed to be the same)
     ldof = shape_pts.shape[2]
 
-    # Initialize a local array to hold the integral over each element
-    local_integral = np.zeros((ldof))
+    # Initialize a local integral array to hold the integral over each element
+    # Each thread will use this array as scratchpad memory
+    local_integral = cuda.local.array(max_ldof, nb.float64)
 
-    # Create a local array to store a quadrature point
-    quad_pt = np.zeros((dim))
+    # Integration point array
+    # Each thread will have its own copy
+    #
+    # Since the function f will be evaluated outside, we
+    # assume that we don't need to store this here
+    #quad_pt = cuda.local.array(max_dim, nb.float64)
 
-    # Loop over the mesh elements on this block 
-    for j in range(s_idx, e_idx):
+    # Assign one thread to each element of the mesh
+    t_idx = nb.cuda.grid(1)
 
-        for l in range(ldof):
+    # Since t_idx is in [0, block_size[i]), we need to shift its value
+    # to a location in the global array
+    j = t_idx + s_idx 
+
+    if j < e_idx:
+
+        # Initialize the local integral over each active dof
+        for l in range(ldof): 
             local_integral[l] = 0.0
 
+        # Quadrature evaluation (with f = 1)
         for k in range(num_qp):
 
-            # Integration point from the rule in (x,y,z) format
-            for d in range(dim):
-                quad_pt[d] = quad_pts[j,k,d]
+            #for d in range(dim):
+            #    quad_pt[d] = quad_pts[j,k,d]
 
-            # Quadrature evaluation (with f = 1)
             for l in range(ldof):
                 local_integral[l] += quad_wts[j,k]*shape_pts[j,k,l] 
 
-        # Accumulate the local integrals into the relevant entries 
-        # of the block-wise global array
+        # Accumulate the local integral into the relevant entries of the block-wise global array
+        # This needs to be done using atomics
         for l in range(ldof):
-            block_element_array[l2g_map[j,l]] += local_integral[l]
+            cuda.atomic.add(block_element_array, l2g_map[j,l], local_integral[l])
 
     return None
 
 
 def run(order=1, static_cond=False,
         meshfile='', visualization=False,
-        device='cpu', pa=False):
+        device='cpu', ngpus=ngpus, pa=False):
     '''
     run ex1
     '''
@@ -188,8 +207,11 @@ def run(order=1, static_cond=False,
     #      largest number that gives a final mesh with no more than 50,000
     #      elements.
     #ref_levels = int(np.floor(np.log(50000./mesh.GetNE())/np.log(2.)/dim))
+    #ref_levels = int(np.floor(np.log(200000./mesh.GetNE())/np.log(2.)/dim))
 
-    ref_levels = 7
+    ref_levels = 6
+
+    print("ref_levels =", ref_levels, "\n")
 
     for x in range(ref_levels):
         mesh.UniformRefinement()
@@ -227,7 +249,7 @@ def run(order=1, static_cond=False,
     # 6. Set up the linear form b(.) which corresponds to the right-hand side of
     #   the FEM linear system, which in this case is (1,phi_i) where phi_i are
     #   the basis functions in the finite element fespace.
-    pymfem_times = np.zeros([num_trials]) # Store the times for statistics
+    pymfem_times = np.zeros([num_trials]) # Store the times for statistics 
 
     b = mfem.LinearForm(fespace)
     one = mfem.ConstantCoefficient(1.0)
@@ -235,11 +257,11 @@ def run(order=1, static_cond=False,
 
     for trial_idx in range(num_trials):
 
-        # Initialize the linear form to zero
+        # Reset the value of the linear form
         # This is needed for correctness
         b.Assign(0.0)
 
-        # Only measure the assembly time
+        # Only time the assemble function
         pymfem_start = time.perf_counter()
 
         b.Assemble()
@@ -248,12 +270,14 @@ def run(order=1, static_cond=False,
 
         pymfem_times[trial_idx] = pymfem_end - pymfem_start
 
+
     #-----------------------------------------------------------------------------
-    # Version based on Parla (naive approach)
+    # Version based on Parla
     #-----------------------------------------------------------------------------
 
     # Pre-processing step
-    precompute_time_start = time.perf_counter() 
+
+    precompute_start = time.perf_counter()
 
     # Get the quad information and store basis functions at the element quad pts
     # Also need to store the local-to-global index mappings used in the scatter
@@ -263,17 +287,17 @@ def run(order=1, static_cond=False,
     ldof = fespace.GetFE(0).GetDof() # Number of local dof
     num_qp = mfem.IntRules.Get(fespace.GetFE(0).GetGeomType(), intorder).GetNPoints()
 
-    quad_wts = np.zeros([num_elements, num_qp]) # Quad weights
-    quad_pts = np.zeros([num_elements, num_qp, dim]) # Quad locations
-    shape_pts = np.zeros([num_elements, num_qp, ldof]) # Basis at quad locations
-    l2g_map = np.zeros([num_elements, ldof], dtype=np.int64) # Local-to-global index mappings
+    quad_wts_cpu = np.zeros([num_elements, num_qp]) # Quad weights
+    quad_pts_cpu = np.zeros([num_elements, num_qp, dim]) # Quad locations
+    shape_pts_cpu = np.zeros([num_elements, num_qp, ldof]) # Basis at quad locations
+    l2g_map_cpu = np.zeros([num_elements, ldof], dtype=np.int64) # Local-to-global index mappings
 
     for i in range(num_elements):
         
         # Extract the element and the local-to-global indices (stored for later)
         element = fespace.GetFE(i)
         vdofs = np.asarray(fespace.GetElementVDofs(i))
-        l2g_map[i,:] = vdofs[:]
+        l2g_map_cpu[i,:] = vdofs[:]
 
         Tr = mesh.GetElementTransformation(i)
         ir = mfem.IntRules.Get(element.GetGeomType(), intorder)
@@ -298,96 +322,151 @@ def run(order=1, static_cond=False,
             wt = ip.weight*Tr.Weight()
 
             # Store the quadrature data for later
-            quad_wts[i,j] = wt
-            quad_pts[i,j,:] = transip.GetDataArray() 
-            shape_pts[i,j,:] = shape.GetDataArray()
+            quad_wts_cpu[i,j] = wt
+            quad_pts_cpu[i,j,:] = transip.GetDataArray() 
+            shape_pts_cpu[i,j,:] = shape.GetDataArray()
 
-    precompute_time_end = time.perf_counter()
-    
+    precompute_end = time.perf_counter()
+
     print("Finished with pre-processing... Running Parla tasks\n")
-    print("Pre-processing time (s):", precompute_time_end - precompute_time_start, "\n")
+    print("Pre-compute time (s):", precompute_end - precompute_start,"\n")
+
+    # Wrap the Numpy arrays with PArrays for automatic device transfer
+    quad_wts_pa = parray.asarray(quad_wts_cpu)
+    quad_pts_pa = parray.asarray(quad_pts_cpu)
+    shape_pts_pa = parray.asarray(shape_pts_cpu) 
+    l2g_map_pa = parray.asarray(l2g_map_cpu) 
 
     #-----------------------------------------------------------------------------
     # Partitioning elements into tasks
     #-----------------------------------------------------------------------------
 
     # Specify a partition of the (global) list of elements
-    num_blocks = args.blocks
     elements_per_block = num_elements // num_blocks # Block size
     leftover_blocks = num_elements % num_blocks
     
     # Adjust the number of elements if the block size doesn't divide the elements evenly
     element_block_sizes = elements_per_block*np.ones([num_blocks], dtype=np.int64)
     element_block_sizes[0:leftover_blocks] += 1
-    
+
     print("Number of blocks: " + str(num_blocks))
     print("Number of left-over blocks: " + str(leftover_blocks))
     print("Elements per block:", element_block_sizes,"\n")
-  
-    # Create an array to hold the global data for the RHS
-    element_global_array = np.zeros([gdof])
 
     # To use the blocking scheme, we'll
     # also use another set of arrays that
     # hold partial sums of this global array
-    element_block_global_array = np.zeros([num_blocks, gdof])
+    global_element_blocks_pa = parray.asarray( np.zeros([num_blocks, gdof]) )
+
+    # Launch the dummy kernel on device 0
+    with cp.cuda.Device(0):
+
+        # Launch a dummy call to the quadrature kernel to
+        # compile prior to the timed region
+        # For this, we will just use the first block
+        s_idx = 0
+        e_idx = element_block_sizes[0]
+
+        # Extract the relevant arrays from the PArrays
+        global_element_block = global_element_blocks_pa[0,:].array
+        l2g_map = l2g_map_pa.array
+        quad_wts = quad_wts_pa.array
+        quad_pts = quad_pts_pa.array
+        shape_pts = shape_pts_pa.array
+
+        threads_per_block = 1024
+        blocks_per_grid = element_block_sizes[0] // threads_per_block + 1
+
+        inner_quad_kernel[blocks_per_grid, threads_per_block](global_element_block, l2g_map,
+                                                              quad_wts, quad_pts, shape_pts,
+                                                              s_idx, e_idx)
 
     # Define the main task for parla
     @spawn(placement=cpu)
     async def LFIntegration_task():
-
-        parla_time = 0.0 # Total time spent in the parla tasks (includes sleep)
 
         # Create the task space first
         ts = TaskSpace("LFTaskSpace")
 
         parla_times = np.zeros([num_trials]) # Store the times for statistics
 
-        # Start tracking the GIL
-        #gil_load.start()
-
         for trial_idx in range(num_trials):
 
-            element_block_global_array[:,:] = 0.0 # Zero out the data from the previous run
+            # Need to zero out the data from the previous experiment
+            with cp.cuda.Device(0):
+                global_element_blocks_pa[:,:] = 0.0
 
-            parla_start = time.perf_counter() # Only measure the time for tasks
+            parla_start = time.perf_counter()
 
             # Next we loop over each block which partitions the element indices
             for i in range(num_blocks):
 
-                # It's really important that the taskids be unique
-                # For this, we include another index for the trial
-                @spawn(taskid=ts[trial_idx,i], vcus=load)
+                # In general, the number of blocks will be the same as ngpus
+                # However, we account for the case that number of blocks > ngpus
+                # Additionally, if there is only one device, then these should
+                # map to device 0
+                device_idx = i % ngpus
+
+                # Define the input/output PArrays for the i-th task
+                input_data = [l2g_map_pa, quad_wts_pa, quad_pts_pa, shape_pts_pa]
+                inout_data = [global_element_blocks_pa[i]]
+
+                # It's really important that each taskid is unique
+                # That is why we include a second index for the trial
+                @spawn(taskid=ts[trial_idx,i], placement=gpu[device_idx], input=input_data, inout=inout_data)
                 def block_local_work():
 
-                    # Need the offset for the element indices owned by this block
-                    # This is the sum of all block sizes that came before it
+                    # Start and end indices for the elements owned by this block
+                    # If we use the CuPy arrays for this, the sum returns a 0D array
+                    # For now, just compute this with NumPy
                     s_idx = np.sum(element_block_sizes[:i])
                     e_idx = s_idx + element_block_sizes[i]
 
+                    # Extract the relevant arrays from the PArrays
+                    global_element_block = global_element_blocks_pa[i,:].array
+                    l2g_map = l2g_map_pa.array 
+                    quad_wts = quad_wts_pa.array
+                    quad_pts = quad_pts_pa.array
+                    shape_pts = shape_pts_pa.array
+
+                    threads_per_block = 1024 
+                    blocks_per_grid = element_block_sizes[i] // threads_per_block + 1
+
                     # Apply the Numba kernel to the block data
-                    inner_quad_kernel(element_block_global_array[i,:], l2g_map, 
-                                      quad_wts, quad_pts, shape_pts, 
-                                      s_idx, e_idx)
+                    inner_quad_kernel[blocks_per_grid, threads_per_block](global_element_block, l2g_map, 
+                                                                          quad_wts, quad_pts, shape_pts, 
+                                                                          s_idx, e_idx)
+
+                    cuda.synchronize() # For numba, we need this! Is this correct for the multi-GPU case?
 
             # Barrier for the task space associated with the loop over blocks
-            await ts 
+            await ts
 
-            # Perform the reduction across the blocks and store in the global_array
-            element_global_array = np.sum(element_block_global_array, axis=0)
+            # Create a PArray to store the output of the reduction across blocks
+            #global_element_pa = parray.asarray(cp.zeros([gdof])) # Returns Type none with array method!
+            global_element_pa = parray.asarray(np.zeros([gdof]))
+
+            print("type(global_element_pa.array):", type(global_element_pa.array),"\n")
+
+            print("About to perform the reduction...\n")
+
+            @spawn(taskid=ts[trial_idx,num_blocks], placement=gpu[0], 
+                   input=[global_element_blocks_pa], inout=[global_element_pa], 
+                   dependencies=[ts[trial_idx,0:num_blocks]])
+            def reduction_task():
+
+                global_element_pa.update(cp.sum(global_element_blocks_pa.array, axis=0))
+                #global_element_pa.update(np.sum(global_element_blocks_pa.array, axis=0))
+
+            await ts
 
             parla_end = time.perf_counter()
             parla_times[trial_idx] = parla_end - parla_start
 
-        # Stop tracking the GIL
-        #gil_load.stop()
+        # End of the trial loop
 
-        # Print the GIL data
-        #stats = gil_load.get()
-        #print(gil_load.format(stats),"\n")
-
-        print("PyMFEM times (min, max, avg) [s]: ", pymfem_times.min(),",",
-                                                    pymfem_times.max(),",",
+        print("PyMFEM times (min, max, avg) [s]: ", pymfem_times.min(),",", 
+                                                    pymfem_times.max(),",", 
                                                     pymfem_times.mean(),
                                                     "\n",flush=True)
 
@@ -404,7 +483,7 @@ def run(order=1, static_cond=False,
         # The 'FormLinearSystem' method, which performs additional manipulations
         # that simplify the RHS for the resulting linear system
         my_b = mfem.LinearForm(fespace)
-        my_b.Assign(element_global_array)
+        my_b.Assign(global_element_pa.array)
 
         # 7. Define the solution vector x as a finite element grid function
         #   corresponding to fespace. Initialize x with initial guess of zero,
@@ -495,6 +574,7 @@ if __name__ == "__main__":
             meshfile=meshfile,
             visualization=visualization,
             device=device,
+            ngpus=ngpus,
             pa=pa)
 
 
