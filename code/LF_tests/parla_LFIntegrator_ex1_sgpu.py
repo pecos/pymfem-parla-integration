@@ -65,7 +65,13 @@ parser.add_argument('-trials', type=int,
                     default=1, help="Number of repititions for timing regions of code.")
 
 args = parser.parse_args()
-print(args,"\n")
+
+print("\nOptions used:\n")
+
+for arg in vars(args):
+    print(arg, "=", getattr(args, arg))
+
+print("\n")
 
 order = args.order
 static_cond = args.static_condensation
@@ -337,14 +343,14 @@ def run(order=1, static_cond=False,
 
     # Specify a partition of the (global) list of elements
     elements_per_block = num_elements // num_blocks # Block size
-    leftover_blocks = num_elements % num_blocks
+    leftover_elements = num_elements % num_blocks
     
     # Adjust the number of elements if the block size doesn't divide the elements evenly
     element_block_sizes = elements_per_block*np.ones([num_blocks], dtype=np.int64)
-    element_block_sizes[0:leftover_blocks] += 1
+    element_block_sizes[0:leftover_elements] += 1
 
     print("Number of blocks: " + str(num_blocks))
-    print("Number of left-over blocks: " + str(leftover_blocks))
+    print("Number of left-over elements: " + str(leftover_elements))
     print("Elements per block:", element_block_sizes,"\n")
 
     # To use the blocking scheme, we'll

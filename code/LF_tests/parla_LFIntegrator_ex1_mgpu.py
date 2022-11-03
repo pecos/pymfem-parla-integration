@@ -343,14 +343,14 @@ def run(order=1, static_cond=False,
 
     # Specify a partition of the (global) list of elements
     elements_per_block = num_elements // num_blocks # Block size
-    leftover_blocks = num_elements % num_blocks
+    leftover_elements = num_elements % num_blocks
     
     # Adjust the number of elements if the block size doesn't divide the elements evenly
     element_block_sizes = elements_per_block*np.ones([num_blocks], dtype=np.int64)
-    element_block_sizes[0:leftover_blocks] += 1
+    element_block_sizes[0:leftover_elements] += 1
 
     print("Number of blocks: " + str(num_blocks))
-    print("Number of left-over blocks: " + str(leftover_blocks))
+    print("Number of left-over elements: " + str(leftover_elements))
     print("Elements per block:", element_block_sizes,"\n")
 
     # To use the blocking scheme, we'll
@@ -381,30 +381,47 @@ def run(order=1, static_cond=False,
                                                               quad_wts, quad_pts, shape_pts,
                                                               s_idx, e_idx)
 
+        cuda.synchronize()
+
     # Define the main task for parla
     @spawn(placement=cpu)
     async def LFIntegration_task():
 
-        # Create the task space first
-        ts = TaskSpace("LFTaskSpace")
+        # Create the task space(s) first
+        init = TaskSpace("InitTaskSpace") # Handles the initialization process
+        lfts = TaskSpace("LFTaskSpace") # Handles the linear form evaluation (blocking + reduction)
 
         parla_times = np.zeros([num_trials]) # Store the times for statistics
 
         for trial_idx in range(num_trials):
 
-            # Need to zero out the data from the previous experiment
-            with cp.cuda.Device(0):
-                global_element_blocks_pa[:,:] = 0.0
+            # Need to be careful here... if the reduction
+            # is done on the host and num_trials > 1, the reduction marks the parray
+            # as invalid. To deal with this, we use a task since at least one valid state exists
+            for i in range(num_blocks):
+                
+                # Map the block to a specific device
+                # In general, the number of blocks will be the same as ngpus
+                # However, we account for the case that number of blocks > ngpus
+                # When there is only one device, then these should map to device 0
+                device_idx = i % ngpus
+
+                inout_data = [global_element_blocks_pa[i]]
+
+                @spawn(taskid=init[trial_idx,i], placement=gpu[device_idx], inout=inout_data)
+                def reset_block():
+
+                    global_element_blocks_pa[i,:] = 0.0
+
+                await init[trial_idx,i]
 
             parla_start = time.perf_counter()
 
             # Next we loop over each block which partitions the element indices
+            # and compute quadrature
             for i in range(num_blocks):
 
-                # In general, the number of blocks will be the same as ngpus
-                # However, we account for the case that number of blocks > ngpus
-                # Additionally, if there is only one device, then these should
-                # map to device 0
+                # Map the block to a specific device
                 device_idx = i % ngpus
 
                 # Define the input/output PArrays for the i-th task
@@ -413,7 +430,8 @@ def run(order=1, static_cond=False,
 
                 # It's really important that each taskid is unique
                 # That is why we include a second index for the trial
-                @spawn(taskid=ts[trial_idx,i], placement=gpu[device_idx], input=input_data, inout=inout_data)
+                @spawn(taskid=lfts[trial_idx,i], placement=gpu[device_idx], 
+                       input=input_data, inout=inout_data, dependencies=[init[trial_idx,0:num_blocks]])
                 def block_local_work():
 
                     # Start and end indices for the elements owned by this block
@@ -437,33 +455,64 @@ def run(order=1, static_cond=False,
                                                                           quad_wts, quad_pts, shape_pts, 
                                                                           s_idx, e_idx)
 
-                    cuda.synchronize() # For numba, we need this! Is this correct for the multi-GPU case?
+                    # Should be fine. To ensure this, we can switch the device context here and call sync inside
+                    # This should also be fine if we are running with multiple streams!
+                    cuda.synchronize() # For numba, we need this! 
 
             # Barrier for the task space associated with the loop over blocks
-            await ts
+            await lfts
 
-            # Create a PArray to store the output of the reduction across blocks
-            #global_element_pa = parray.asarray(cp.zeros([gdof])) # Returns Type none with array method!
-            global_element_pa = parray.asarray(np.zeros([gdof]))
 
-            print("type(global_element_pa.array):", type(global_element_pa.array),"\n")
 
-            print("About to perform the reduction...\n")
+            # The device reduction hangs for some reason...
 
-            @spawn(taskid=ts[trial_idx,num_blocks], placement=gpu[0], 
-                   input=[global_element_blocks_pa], inout=[global_element_pa], 
-                   dependencies=[ts[trial_idx,0:num_blocks]])
-            def reduction_task():
+            # Create CuPy array on device 0 to store the output of the reduction across blocks
+            #global_element_gpu = cp.zeros([gdof]) 
 
-                global_element_pa.update(cp.sum(global_element_blocks_pa.array, axis=0))
+            # Note: Could try using dependencies=ts[:,:], which should unpack object into a list
+            # Better to use the explicit dependencies to be verbose
+            #@spawn(taskid=lfts[trial_idx,num_blocks], placement=gpu[0], 
+            #       input=[global_element_blocks_pa], dependencies=[lfts[trial_idx,0:num_blocks]])
+            #def reduction_task():
+
+                #global_element_pa.update(cp.sum(global_element_blocks_pa.array, axis=0))
                 #global_element_pa.update(np.sum(global_element_blocks_pa.array, axis=0))
 
-            await ts
+                #global_element_gpu[:] = cp.sum(global_element_blocks_pa.array, axis=0)
+
+            #await lfts
+
+
+
+
+            # This code works...
+            # Test the reduction on the host...
+            global_element_cpu = np.zeros([gdof])
+
+            @spawn(taskid=lfts[trial_idx,num_blocks], placement=cpu,
+                   input=[global_element_blocks_pa], dependencies=[lfts[trial_idx,0:num_blocks]])
+            def reduction_task():
+
+                global_element_cpu[:] = np.sum(global_element_blocks_pa.array, axis=0)    
+
+            await lfts
 
             parla_end = time.perf_counter()
             parla_times[trial_idx] = parla_end - parla_start
 
+
+
+
         # End of the trial loop
+
+
+
+        # Copy the GPU data on device 0 back to the host (not timed)
+        # Can also use the array.get() method to do this
+        #global_element_cpu = cp.asnumpy(global_element_gpu)
+
+
+
 
         print("PyMFEM times (min, max, avg) [s]: ", pymfem_times.min(),",", 
                                                     pymfem_times.max(),",", 
@@ -483,7 +532,7 @@ def run(order=1, static_cond=False,
         # The 'FormLinearSystem' method, which performs additional manipulations
         # that simplify the RHS for the resulting linear system
         my_b = mfem.LinearForm(fespace)
-        my_b.Assign(global_element_pa.array)
+        my_b.Assign(global_element_cpu)
 
         # 7. Define the solution vector x as a finite element grid function
         #   corresponding to fespace. Initialize x with initial guess of zero,

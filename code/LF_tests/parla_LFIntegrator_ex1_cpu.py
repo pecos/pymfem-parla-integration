@@ -188,8 +188,7 @@ def run(order=1, static_cond=False,
     #      largest number that gives a final mesh with no more than 50,000
     #      elements.
     #ref_levels = int(np.floor(np.log(50000./mesh.GetNE())/np.log(2.)/dim))
-
-    ref_levels = 7
+    ref_levels = 8
 
     for x in range(ref_levels):
         mesh.UniformRefinement()
@@ -314,14 +313,14 @@ def run(order=1, static_cond=False,
     # Specify a partition of the (global) list of elements
     num_blocks = args.blocks
     elements_per_block = num_elements // num_blocks # Block size
-    leftover_blocks = num_elements % num_blocks
+    leftover_elements = num_elements % num_blocks
     
     # Adjust the number of elements if the block size doesn't divide the elements evenly
     element_block_sizes = elements_per_block*np.ones([num_blocks], dtype=np.int64)
-    element_block_sizes[0:leftover_blocks] += 1
+    element_block_sizes[0:leftover_elements] += 1
     
     print("Number of blocks: " + str(num_blocks))
-    print("Number of left-over blocks: " + str(leftover_blocks))
+    print("Number of left-over elements: " + str(leftover_elements))
     print("Elements per block:", element_block_sizes,"\n")
   
     # Create an array to hold the global data for the RHS
