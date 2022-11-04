@@ -383,6 +383,8 @@ def run(order=1, static_cond=False,
 
         cuda.synchronize()
 
+    print("Setup complete. Preparing to launch Parla tasks...\n")
+
     # Define the main task for parla
     @spawn(placement=cpu)
     async def LFIntegration_task():
@@ -467,35 +469,44 @@ def run(order=1, static_cond=False,
             # The device reduction hangs for some reason...
 
             # Create CuPy array on device 0 to store the output of the reduction across blocks
-            #global_element_gpu = cp.zeros([gdof]) 
+            global_element_gpu = cp.zeros([gdof]) 
 
-            # Note: Could try using dependencies=ts[:,:], which should unpack object into a list
-            # Better to use the explicit dependencies to be verbose
-            #@spawn(taskid=lfts[trial_idx,num_blocks], placement=gpu[0], 
-            #       input=[global_element_blocks_pa], dependencies=[lfts[trial_idx,0:num_blocks]])
-            #def reduction_task():
+            print("About to start the reduction task.\n")
 
-                #global_element_pa.update(cp.sum(global_element_blocks_pa.array, axis=0))
-                #global_element_pa.update(np.sum(global_element_blocks_pa.array, axis=0))
+            # Printing the array without a context results in a print statement from each device
+            # Only let device 0 print the PArray
+            with cp.cuda.Device(0):
+                print("global_element_blocks_pa =", global_element_blocks_pa, "\n")
 
-                #global_element_gpu[:] = cp.sum(global_element_blocks_pa.array, axis=0)
+                # Note: Could try using dependencies=ts[:,:], which should unpack object into a list
+                # Better to use the explicit dependencies to be verbose
+                @spawn(taskid=lfts[trial_idx,num_blocks], placement=gpu[0], 
+                       input=[global_element_blocks_pa], dependencies=[lfts[trial_idx,0:num_blocks]])
+                def reduction_task():
 
-            #await lfts
+                    print("Made it inside the reduction task!\n")
+
+                    #global_element_pa.update(cp.sum(global_element_blocks_pa.array, axis=0))
+                    #global_element_pa.update(np.sum(global_element_blocks_pa.array, axis=0))
+
+                    global_element_gpu[:] = cp.sum(global_element_blocks_pa.array, axis=0)
+
+                await lfts
 
 
 
 
             # This code works...
             # Test the reduction on the host...
-            global_element_cpu = np.zeros([gdof])
+            #global_element_cpu = np.zeros([gdof])
 
-            @spawn(taskid=lfts[trial_idx,num_blocks], placement=cpu,
-                   input=[global_element_blocks_pa], dependencies=[lfts[trial_idx,0:num_blocks]])
-            def reduction_task():
+            #@spawn(taskid=lfts[trial_idx,num_blocks], placement=cpu,
+            #       input=[global_element_blocks_pa], dependencies=[lfts[trial_idx,0:num_blocks]])
+            #def reduction_task():
 
-                global_element_cpu[:] = np.sum(global_element_blocks_pa.array, axis=0)    
+            #    global_element_cpu[:] = np.sum(global_element_blocks_pa.array, axis=0)    
 
-            await lfts
+            #await lfts
 
             parla_end = time.perf_counter()
             parla_times[trial_idx] = parla_end - parla_start
@@ -509,7 +520,7 @@ def run(order=1, static_cond=False,
 
         # Copy the GPU data on device 0 back to the host (not timed)
         # Can also use the array.get() method to do this
-        #global_element_cpu = cp.asnumpy(global_element_gpu)
+        global_element_cpu = cp.asnumpy(global_element_gpu)
 
 
 

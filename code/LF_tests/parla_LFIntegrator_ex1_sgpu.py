@@ -373,6 +373,8 @@ def run(order=1, static_cond=False,
                                                           quad_wts_gpu, quad_pts_gpu, shape_pts_gpu,
                                                           s_idx, e_idx)
 
+    cuda.synchronize()
+
     # Define the main task for parla
     @spawn(placement=cpu)
     async def LFIntegration_task():

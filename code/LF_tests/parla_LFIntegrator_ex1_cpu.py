@@ -188,7 +188,7 @@ def run(order=1, static_cond=False,
     #      largest number that gives a final mesh with no more than 50,000
     #      elements.
     #ref_levels = int(np.floor(np.log(50000./mesh.GetNE())/np.log(2.)/dim))
-    ref_levels = 8
+    ref_levels = 9
 
     for x in range(ref_levels):
         mesh.UniformRefinement()
