@@ -1,0 +1,46 @@
+#!/bin/bash
+#----------------------------------------------------
+#   Script for multi-core CPU runs on 
+#   TACC Frontera CLX nodes
+#
+#   *** Parallel Job in Small Queue***
+# 
+# Last revised: 8 November 2022
+#
+# Notes: This particular script launches a python
+# script that demonstrates the integration of Parla
+# with MFEM on CPU architectures.
+#
+#----------------------------------------------------
+
+#SBATCH -J LF_cpu          # Job name
+#SBATCH -o LF_cpu.o%j      # Name of stdout output file
+#SBATCH -e LF_cpu.e%j      # Name of stderr error file
+#SBATCH -p small           # Queue (partition) name
+#SBATCH -N 1               # Total # of nodes (must be 1 for serial)
+#SBATCH -n 56              # Total # of cores
+#SBATCH -t 01:00:00        # Run time (hh:mm:ss)
+#SBATCH --mail-type=all    # Send email at begin and end of job
+#SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
+#SBATCH --mail-user=william.sands@austin.utexas.edu
+
+# To use the conda environment and modules therein, we
+# need to source the conda.sh file
+source /home1/09047/was2489/miniconda3/etc/profile.d/conda.sh
+
+# Go to the directory of the project
+cd ~/Projects/pymfem-parla-integration/code/LF_tests
+
+# Activate the Python environment
+conda activate PyMFEM_env
+
+# Number of trials for each experiment
+num_trials=5
+
+num_proc_list="1 2 4 8 16 32 56"
+
+for num_proc in $num_proc_list  
+do
+    echo "Working on the case with $num_proc MPI processes"
+    mpirun -np $num_proc python pymfem_mpi_ex1_benchmark.py -trials $num_trials
+done
