@@ -8,8 +8,8 @@
 # Last revised: 8 November 2022
 #
 # Notes: This particular script launches a python
-# script that demonstrates the integration of Parla
-# with MFEM on CPU architectures.
+# script that benchmarks MFEM's linear form performance
+# on CPU architectures (MPI only).
 #
 #----------------------------------------------------
 
