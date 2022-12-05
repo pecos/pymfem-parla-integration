@@ -53,9 +53,6 @@ def get_2D_chebyshev_legendre(N):
     at z = 0 in the unit sphere. This returns a set of 2N points.
     """
 
-    # First get the GL quadrature locations and weights on [-1,1]
-    mu_GL, w_GL = np.polynomial.legendre.leggauss(N)
-
     # Storage for the quadrature set
     w_CL = np.zeros([2*N])
     Omega_CL = np.zeros([2*N,2])
@@ -68,15 +65,9 @@ def get_2D_chebyshev_legendre(N):
         # Compute the quadrature weights
         w_CL[k] = np.pi/N
 
-        for ell in range(N):
-
-            # Quadrature weights
-            w_CL[k,ell] = (np.pi/N)*w_GL[ell]
-
-            # Quadrature locations
-            Omega_CL[k,ell,0] = np.cos(phi_k)*np.sqrt(1 - mu_GL[ell]**2)
-            Omega_CL[k,ell,1] = np.sin(phi_k)*np.sqrt(1 - mu_GL[ell]**2)
-            Omega_CL[k,ell,2] = mu_GL[ell]
+        # Quadrature locations
+        Omega_CL[k,0] = np.cos(phi_k)
+        Omega_CL[k,1] = np.sin(phi_k)
 
     return w_CL, Omega_CL
 
@@ -114,60 +105,80 @@ def get_3D_chebyshev_legendre(N):
     return w_CL, Omega_CL
 
 
+def build_directed_graph(mesh, ordinate, fname):
+    """
+    Helper function to build a directed graph for a given
+    ordinate using an unstructured mesh.
+
+    The basic procedure is as follows. For each interior face:
+    1) Compute the normal vector for that is shared by a pair of elements.
+    2) Determine the orientation of the normal relative to the ordinate.
+    3) Write the corresponding entry into a sparse data structure.
+    4) Write the sparse data to a file
+
+    Note: The filename that is passed in does not include an
+    extension. We supply it inside this function, since we are
+    using the utilities provided by SciPy.
+    """
+
+    # Number of mesh elements and problem dimension
+    NE = mesh.GetNE()
+    dim = mesh.Dimension()
+
+    # The mesh dimension and ordinate dimension should match
+    assert dim == ordinate.size
+
+    # First, create the sparse data structure that will hold this particular
+    # directed graph. We use a dictionary of keys structure that holds integers.
+    # If the (i,j) entry is 1, then this means that there is an ordered edge connecting
+    # elements i and j. We can use scipy utilities to convert the formats to other types
+    dir_graph = sp.sparse.dok_matrix((NE,NE), dtype=np.int32)
+
+    # Create mfem::Vector to hold the norm of the face
+    normal = mfem.Vector(dim)
+
+    for i in range(mesh.GetNumFaces()):
+
+        # There are no elements upwind of exterior faces 
+        if mesh.FaceIsInterior(i):
+
+            # Get the elements and transformation associated with this shared face
+            # Note: The convention is that the normal vector for element 2 is taken to be
+            # the normal vector for element 1 multiplied by -1.
+            elem1, elem2 = mesh.GetFaceElements(i)
+
+            # PyMFEM doesn't allow us to access the mesh method "GetFaceElementTransformations"
+            # Instead, we call the "GetFaceTransformation" method and associate the norm with elem1
+            FTr = mesh.GetFaceTransformation(i)
+
+            # Set the point at which the Jacobian is to be evaluated. This will give the orientation
+            # of the normal vector. We use the geometric center of the face
+            FTr.SetIntPoint(mfem.Geometries.GetCenter(FTr.GetGeometryType()))
+
+            # Compute the normal vector (not necessarily unit length)
+            # We take this to be associated with element 1
+            mfem.CalcOrtho(FTr.Jacobian(), normal)
+
+            # Now check the orientation of the normal relative to the ordinate
+            if np.dot(ordinate, normal.GetData()) > 0.0:
+
+                # The normal points in the same direction as the ordinate 
+                # This means that there is an edge connecting elem1 to elem2
+                dir_graph[elem1, elem2] = 1
+
+            # We use the convention that element faces orthogonal to the ordinate
+            # are not considered to be downwind
+
+    # Change the dok_matrix to a csr format
+    dir_graph_csr = dir_graph.tocsr(copy=False)
+
+    # Write the sparse data to a file 
+    sp.sparse.save_npz(filename + ".npz", dir_graph_csr)
+
+    return None
 
 
 
-class MyDomainLFIntegrator(lininteg.DomainLFIntegrator):
-
-    # Don't need to define a class constructor here...
-
-    # Most of the parent class' methods will be
-    # the same, so we'll only provide the method
-    # that performs quadrature on a particular
-    # element that we need...
-    def AssembleRHSElementVect(self, *args):
-        """
-        AssembleRHSElementVect(DomainLFIntegrator self, FiniteElement el, ElementTransformation Tr, Vector elvect)
-        """
-
-        # Unpack the arguments
-        el = args[0]
-        Tr = args[1]
-        elvect = args[2]
-
-        # Number of active dof on this element
-        dof = el.GetDof()
-
-        # Set the order for integration
-        intorder = 2*el.GetOrder()
-
-        # Get the integration rule for this geometry and order
-        ir = mfem.IntRules.Get(el.GetGeomType(), intorder)
-
-        # Storage for the basis functions and local dof on this element
-        # This should always be smaller than the size of the global vector
-        shape = mfem.Vector(np.zeros([dof]))
-        elvect = mfem.Vector(np.zeros([dof]))
-
-        # Loop over the quadrature points and compute shape functions
-        for j in range(ir.GetNPoints()):
-
-            # Get the integration point from the rule
-            ip = ir.IntPoint(j)
-
-            # Set an integration point in the element transformation
-            Tr.SetIntPoint(ip)
-
-            # Computing the det(J)*("any coefficient function Q")
-            # This factor will be used to adjust the weight from ip
-            val = Tr.Weight()*Q.Eval(Tr, ip)
-
-            # Next, evaluate all the basis functions at this integration point
-            el.CalcPhysShape(Tr, shape)
-
-            elvec += mfem.Vector( val*ip.weight*shape.GetDataArray() ) 
-  
-        return None
 
 
 
