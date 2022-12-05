@@ -1,6 +1,6 @@
 """
    Code to build a series of directed graphs associated with a collection of discrete ordinates 
-   for a computational mesh. This code was converted from ex1.py in PyMFEM.
+   for 2-D and 3-D computational meshes. This code was converted from ex1.py in PyMFEM.
 
    How to run:
       python <arguments>
@@ -27,25 +27,44 @@
    sparse matrix format.
 """
 
+import argparse
 import os
 from os.path import expanduser, join
+
+
+# Parse the command line data
+parser = argparse.ArgumentParser(description="Build directed graphs for a discrete ordinates calculation.")
+parser.add_argument("-meshfile", default="star.mesh", type=str, help="Mesh file to use.")
+parser.add_argument("-order", default=1, type=int,
+                    help="Finite element order (polynomial degree) or -1 for isoparametric space.")
+parser.add_argument("-M", type=int, default=4, help="Order of the Chebyshev-Legendre quadrature.")
+
+args = parser.parse_args()
+
+print("\nOptions used:\n")
+
+for arg in vars(args):
+    print(arg, "=", getattr(args, arg))
+
+print("\n")
+
+# Set some variables from the command line input
+meshfile = args.meshfile
+order = args.order
+M = args.M
+
+meshfile_path = expanduser(join(os.path.dirname(__file__), '../PyMFEM/', 'data', meshfile))
+
+
 import numpy as np
-import scipy as sp
+import scipy.sparse as sparse
 
 import mfem.ser as mfem
 
-# Define the quadrature sets for 1-, 2-, and 3-D meshs
+import time
+
+# Define the quadrature sets for 2-D and 3-D meshes
 # We will be using the Chebyshev-Legendre nodes to do this
-
-def get_1D_chebyshev_legendre(N):
-    """
-    In 1-D, this is the same as using N Gauss-Legendre nodes
-    """
-
-    mu_GL, w_GL = np.polynomial.legendre.leggauss(N)
-
-    return mu_GL, w_GL 
-
 
 def get_2D_chebyshev_legendre(N):
     """
@@ -132,7 +151,7 @@ def build_directed_graph(mesh, ordinate, fname):
     # directed graph. We use a dictionary of keys structure that holds integers.
     # If the (i,j) entry is 1, then this means that there is an ordered edge connecting
     # elements i and j. We can use scipy utilities to convert the formats to other types
-    dir_graph = sp.sparse.dok_matrix((NE,NE), dtype=np.int32)
+    dir_graph = sparse.dok_matrix((NE,NE), dtype=np.int32)
 
     # Create mfem::Vector to hold the norm of the face
     normal = mfem.Vector(dim)
@@ -160,7 +179,7 @@ def build_directed_graph(mesh, ordinate, fname):
             mfem.CalcOrtho(FTr.Jacobian(), normal)
 
             # Now check the orientation of the normal relative to the ordinate
-            if np.dot(ordinate, normal.GetData()) > 0.0:
+            if np.dot(ordinate, normal.GetDataArray()) > 0.0:
 
                 # The normal points in the same direction as the ordinate 
                 # This means that there is an edge connecting elem1 to elem2
@@ -172,49 +191,41 @@ def build_directed_graph(mesh, ordinate, fname):
     # Change the dok_matrix to a csr format
     dir_graph_csr = dir_graph.tocsr(copy=False)
 
+    #print("dir_graph_csr:\n", dir_graph_csr)
+
     # Write the sparse data to a file 
-    sp.sparse.save_npz(filename + ".npz", dir_graph_csr)
+    sparse.save_npz(fname + ".npz", dir_graph_csr)
 
     return None
 
 
 
+def main():
 
+    global meshfile, meshfile_path, order, M
 
-
-
-def run(order=1, static_cond=False,
-        meshfile='', visualization=False,
-        device='cpu', pa=False):
-    '''
-    run ex1
-    '''
-
-    device = mfem.Device(device)
-    device.Print()
-
-    mesh = mfem.Mesh(meshfile, 1, 1)
+    # Read in the meshfile
+    mesh = mfem.Mesh(meshfile_path, 1, 1)
     dim = mesh.Dimension()
 
-    #   3. Refine the mesh to increase the resolution. In this example we do
-    #      'ref_levels' of uniform refinement. We choose 'ref_levels' to be the
-    #      largest number that gives a final mesh with no more than 50,000
-    #      elements.
-    ref_levels = int(
-        np.floor(
-            np.log(
-                50000. /
-                mesh.GetNE()) /
-            np.log(2.) /
-            dim))
+    print("Number of spatial dimensions: %d"%dim)
+
+    assert dim > 1, "Error: Only 2-D and 3-D meshes are supported."
+
+    # Refine the mesh to increase the resolution. In this example we do
+    # 'ref_levels' of uniform refinement. We choose 'ref_levels' to be the
+    # largest number that gives a final mesh with no more than 50,000
+    # elements.
+    ref_levels = int(np.floor(np.log(50000. / mesh.GetNE()) / np.log(2.) /dim))
+
     for x in range(ref_levels):
         mesh.UniformRefinement()
 
-    # 5. Define a finite element space on the mesh. Here we use vector finite
-    #   elements, i.e. dim copies of a scalar finite element space. The vector
-    #   dimension is specified by the last argument of the FiniteElementSpace
-    #   constructor. For NURBS meshes, we use the (degree elevated) NURBS space
-    #   associated with the mesh nodes.
+    # Define a finite element space on the mesh. Here we use vector finite
+    # elements, i.e. dim copies of a scalar finite element space. The vector
+    # dimension is specified by the last argument of the FiniteElementSpace
+    # constructor. For NURBS meshes, we use the (degree elevated) NURBS space
+    # associated with the mesh nodes.
     if order > 0:
         fec = mfem.H1_FECollection(order, dim)
     elif mesh.GetNodes():
@@ -224,165 +235,75 @@ def run(order=1, static_cond=False,
         order = 1
         fec = mfem.H1_FECollection(order, dim)
     fespace = mfem.FiniteElementSpace(mesh, fec)
-    print('Number of finite element unknowns: ' +
-          str(fespace.GetTrueVSize()))
+    print("Number of finite element unknowns: " + str(fespace.GetTrueVSize()))
 
-    # 5. Determine the list of true (i.e. conforming) essential boundary dofs.
-    #    In this example, the boundary conditions are defined by marking all
-    #    the boundary attributes from the mesh as essential (Dirichlet) and
-    #    converting them to a list of true dofs.
+    # Determine the list of true (i.e. conforming) essential boundary dofs.
+    # In this example, the boundary conditions are defined by marking all
+    # the boundary attributes from the mesh as essential (Dirichlet) and
+    # converting them to a list of true dofs.
     ess_tdof_list = mfem.intArray()
+
     if mesh.bdr_attributes.Size() > 0:
         ess_bdr = mfem.intArray([1] * mesh.bdr_attributes.Max())
         ess_bdr = mfem.intArray(mesh.bdr_attributes.Max())
         ess_bdr.Assign(1)
         fespace.GetEssentialTrueDofs(ess_bdr, ess_tdof_list)
 
-    # 6. Set up the linear form b(.) which corresponds to the right-hand side of
-    #   the FEM linear system, which in this case is (1,phi_i) where phi_i are
-    #   the basis functions in the finite element fespace.
-    b = mfem.LinearForm(fespace)
-    one = mfem.ConstantCoefficient(1.0)
-    b.AddDomainIntegrator(mfem.DomainLFIntegrator(one))
-    b.Assemble()
+    # Construct the ordinate arrays for the mesh based on the dimension
+    # We use Chebyshev-Legendre nodes for this
+    if dim == 2:
+        weights_cl, ordinates_cl = get_2D_chebyshev_legendre(M)
+    else:
+        weights_cl, ordinates_cl = get_3D_chebyshev_legendre(M)
 
+    # Since the 2-D and 3-D ordinates are given (respectively) 
+    # as 2-D and 3-D arrays, we flatten them to provide a unique accessor
+    shape = ordinates_cl.shape
+    ordinates_cl = ordinates_cl.flatten()
 
+    # Calculate the number of entries in the ordinate array 
+    if dim == 2:
+        num_ordinates = shape[0]
+    else:
+        num_ordinates = shape[0]*shape[1]
 
-    # Try a test involving my variant of the LFIntegrator
-    my_b = mfem.LinearForm(fespace)
-    my_b.AddDomainIntegrator(MyDomainLFIntegrator(one))
-    my_b.Assemble()
+    # Specify the directory to store the graph data files that have been created
+    # We will give it the name of the mesh and the order of the angular quadrature
+    output_dir = meshfile.replace(".data","") + "-M-" + str(M)
 
+    # Create it if it doesn't already exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
-    # 7. Define the solution vector x as a finite element grid function
-    #   corresponding to fespace. Initialize x with initial guess of zero,
-    #   which satisfies the boundary conditions.
-    x = mfem.GridFunction(fespace)
-    x.Assign(0.0)
+    # Note, any pre-existing data files for this case will be overwritten
+    # so there is no need to remove them.
 
-    # 8. Set up the bilinear form a(.,.) on the finite element space
-    #   corresponding to the Laplacian operator -Delta, by adding the Diffusion
-    #   domain integrator.
-    a = mfem.BilinearForm(fespace)
-    if pa:
-        a.SetAssemblyLevel(mfem.AssemblyLevel_PARTIAL)
-    a.AddDomainIntegrator(mfem.DiffusionIntegrator(one))
+    build_start = time.perf_counter()
 
-    # 9. Assemble the bilinear form and the corresponding linear system,
-    #   applying any necessary transformations such as: eliminating boundary
-    #   conditions, applying conforming constraints for non-conforming AMR,
-    #   static condensation, etc.
-    if static_cond:
-        a.EnableStaticCondensation()
-    a.Assemble()
+    # Loop over the ordinates and construct the directed graph for the mesh
+    for n in range(num_ordinates):
 
-    A = mfem.OperatorPtr()
-    B = mfem.Vector()
-    X = mfem.Vector()
+        s_idx = dim*n
+        e_idx = s_idx + dim
 
-    a.FormLinearSystem(ess_tdof_list, x, b, A, X, B)
-    print("Size of linear system: " + str(A.Height()))
+        # Put the file name here, but do not include the extension ".data" or file type
+        # The file type is specified in the function that builds the graph
+        file_name = output_dir + "/" + meshfile.replace(".data","") + "-M-" + str(M) + "-idx-" + str(n)
 
-    # Should also form the linear system for my modified B
-    my_B = mfem.Vector()
-    a.FormLinearSystem(ess_tdof_list, x, my_b, A, X, my_B)
+        #print("file_name is %s" % file_name)
 
-    # Compare the output of the two RHS functions
-    print("B =", B.GetDataArray(),"\n")
-    print("my_B =", my_B.GetDataArray(),"\n")
+        build_directed_graph(mesh, ordinates_cl[s_idx:e_idx], file_name)
 
-    # Covert the MFEM Vectors to Numpy arrays for norms
-    B_array = B.GetDataArray()
-    my_B_array = my_B.GetDataArray()
+        print("Finished processing ordinate %d" %n)
 
-    # Relative error against the MFEM output in the 2-norm
-    rel_err_1 = np.linalg.norm(my_B_array - B_array, 1)/np.linalg.norm(B_array, 1)
-    rel_err_2 = np.linalg.norm(my_B_array - B_array, 2)/np.linalg.norm(B_array, 2)
-    rel_err_inf = np.linalg.norm(my_B_array - B_array, np.inf)/np.linalg.norm(B_array, np.inf)
+    build_end = time.perf_counter()
+    total_build = build_end - build_start
 
-    print("Relative error in the rhs (1-norm):", rel_err_1, "\n")
-    print("Relative error in the rhs (2-norm):", rel_err_2, "\n")
-    print("Relative error in the rhs (inf-norm):", rel_err_inf, "\n")
-
-
-
-
-
-
-
-
-
-    # 10. Solve
-    #if pa:
-    #    if mfem.UsesTensorBasis(fespace):
-    #        M = mfem.OperatorJacobiSmoother(a, ess_tdof_list)
-    #        mfem.PCG(A, M, B, X, 1, 4000, 1e-12, 0.0)
-    #    else:
-    #        mfem.CG(A, B, X, 1, 400, 1e-12, 0.0)
-    #else:
-        #AA = mfem.OperatorHandle2SparseMatrix(A)
-    #    AA = A.AsSparseMatrix()
-    #    M = mfem.GSSmoother(AA)
-    #    mfem.PCG(A, M, B, X, 1, 200, 1e-12, 0.0)
-
-    # 11. Recover the solution as a finite element grid function.
-    #a.RecoverFEMSolution(X, b, x)
-
-    # 12. Save the refined mesh and the solution. This output can be viewed later
-    #     using GLVis: "glvis -m refined.mesh -g sol.gf".
-    #mesh.Print('refined.mesh', 8)
-    #x.Save('sol.gf', 8)
-
-    # 13. Send the solution by socket to a GLVis server.
-    #if (visualization):
-    #    sol_sock = mfem.socketstream("localhost", 19916)
-    #    sol_sock.precision(8)
-    #    sol_sock.send_solution(mesh, x)
-
+    print("Total build time took %e (s)"%total_build)
 
 if __name__ == "__main__":
-    from mfem.common.arg_parser import ArgParser
 
-    parser = ArgParser(description='Ex1 (Laplace Problem)')
-    parser.add_argument('-m', '--mesh',
-                        default='star.mesh',
-                        action='store', type=str,
-                        help='Mesh file to use.')
-    parser.add_argument('-vis', '--visualization',
-                        action='store_true',
-                        help='Enable GLVis visualization')
-    parser.add_argument('-o', '--order',
-                        action='store', default=1, type=int,
-                        help="Finite element order (polynomial degree) or -1 for isoparametric space.")
-    parser.add_argument('-sc', '--static-condensation',
-                        action='store_true',
-                        help="Enable static condensation.")
-    parser.add_argument("-pa", "--partial-assembly",
-                        action='store_true',
-                        help="Enable Partial Assembly.")
-    parser.add_argument("-d", "--device",
-                        default="cpu", type=str,
-                        help="Device configuration string, see Device::Configure().")
-
-    args = parser.parse_args()
-    parser.print_options(args)
-
-    order = args.order
-    static_cond = args.static_condensation
-    # ../PyMFEM/data
-    meshfile = expanduser(
-        join(os.path.dirname(__file__), '../PyMFEM/', 'data', args.mesh))
-    visualization = args.visualization
-    device = args.device
-    pa = args.partial_assembly
-
-    run(order=order,
-        static_cond=static_cond,
-        meshfile=meshfile,
-        visualization=visualization,
-        device=device,
-        pa=pa)
-
+    main()
 
 
 
