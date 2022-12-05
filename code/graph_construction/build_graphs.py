@@ -66,7 +66,7 @@ import time
 # Define the quadrature sets for 2-D and 3-D meshes
 # We will be using the Chebyshev-Legendre nodes to do this
 
-def get_2D_chebyshev_legendre(N):
+def get_chebyshev_legendre_quadrature2D(N):
     """
     In the case of a 2-D domain, we assume that we are looking
     at z = 0 in the unit sphere. This returns a set of 2N points.
@@ -82,7 +82,7 @@ def get_2D_chebyshev_legendre(N):
         phi_k = (2*k + 1)*np.pi/(2*N)
 
         # Compute the quadrature weights
-        w_CL[k] = np.pi/N
+        w_CL[k] = 2*np.pi/N
 
         # Quadrature locations
         Omega_CL[k,0] = np.cos(phi_k)
@@ -91,7 +91,7 @@ def get_2D_chebyshev_legendre(N):
     return w_CL, Omega_CL
 
 
-def get_3D_chebyshev_legendre(N):
+def get_chebyshev_legendre_quadrature3D(N):
     """
     Computes the order N Chebyshev-Legendre quadrature set on the unit sphere.
     The CL quadratures of order N require 2N^{2} integration weights/nodes. It
@@ -252,9 +252,9 @@ def main():
     # Construct the ordinate arrays for the mesh based on the dimension
     # We use Chebyshev-Legendre nodes for this
     if dim == 2:
-        weights_cl, ordinates_cl = get_2D_chebyshev_legendre(M)
+        weights_cl, ordinates_cl = get_chebyshev_legendre_quadrature2D(M)
     else:
-        weights_cl, ordinates_cl = get_3D_chebyshev_legendre(M)
+        weights_cl, ordinates_cl = get_chebyshev_legendre_quadrature3D(M)
 
     # Since the 2-D and 3-D ordinates are given (respectively) 
     # as 2-D and 3-D arrays, we flatten them to provide a unique accessor
