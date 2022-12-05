@@ -271,12 +271,9 @@ def main():
     # We will give it the name of the mesh and the order of the angular quadrature
     output_dir = meshfile.replace(".data","") + "-M-" + str(M)
 
-    # Create it if it doesn't already exist
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    # Note, any pre-existing data files for this case will be overwritten
-    # so there is no need to remove them.
+    # Remove this directory and its contents
+    os.system("rm -rf " + output_dir)
+    os.makedirs(output_dir)
 
     build_start = time.perf_counter()
 
@@ -289,8 +286,6 @@ def main():
         # Put the file name here, but do not include the extension ".data" or file type
         # The file type is specified in the function that builds the graph
         file_name = output_dir + "/" + meshfile.replace(".data","") + "-M-" + str(M) + "-idx-" + str(n)
-
-        #print("file_name is %s" % file_name)
 
         build_directed_graph(mesh, ordinates_cl[s_idx:e_idx], file_name)
 
