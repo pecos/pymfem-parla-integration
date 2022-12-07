@@ -1,0 +1,94 @@
+#!/bin/bash
+#----------------------------------------------------
+#   Script for multi-core CPU runs on 
+#   TACC Frontera CLX nodes
+#
+#   *** Job in Small Queue***
+# 
+# Last revised: 6 December 2022
+#
+# Notes: This particular script launches a python
+# script that builds a collection of directed,
+# possibly cyclic graphs associated with the traversal
+# of a unstructured finite element meshes. We also
+# convert the output (in MM format) to the ECL format.
+#
+# Note: We assume that the conversion tool has already
+# been compiled in advance. If it is not, then an error
+# will be thrown.
+#----------------------------------------------------
+
+#SBATCH -J generate_data          # Job name
+#SBATCH -o generate_data.o%j      # Name of stdout output file
+#SBATCH -e generate_data.e%j      # Name of stderr error file
+#SBATCH -p small           # Queue (partition) name
+#SBATCH -N 1               # Total # of nodes (must be 1 for serial)
+#SBATCH -n 56              # Total # of cores
+#SBATCH -t 01:00:00        # Run time (hh:mm:ss)
+#SBATCH --mail-type=all    # Send email at begin and end of job
+#SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
+#SBATCH --mail-user=william.sands@austin.utexas.edu
+
+# To use the conda environment and modules therein, we
+# need to source the conda.sh file
+source /home1/09047/was2489/miniconda3/etc/profile.d/conda.sh
+
+# Go to the directory of the project
+cd ~/Projects/pymfem-parla-integration/code/graph_construction
+
+# Activate the Python environment
+conda activate PyMFEM_env
+
+# Specify the list of mesh files that are to be used
+meshfile_list="star.mesh toroid-wedge.mesh toroid-hex.mesh beam-hex.mesh"
+
+# Specify the order of the angular quadrature used
+# This provides a collection of directions that provide an orientation to the traversal
+# Note that for an Mth order accuracy, we need 2M angles in 2-D and 2M^2 in 3-D, so
+# take care when setting this value
+quad_order=4
+
+# Specify the upper bound on the number of elements for any given mesh
+max_elements=100000
+
+# Specify the file (executable) used to generate the ECL binary format
+executable=mm2ecl
+
+
+# First, for each mesh, generate all the directed graphs and store the output in Matrix-Market format
+for file in $meshfile_list  
+do
+    printf "Meshfile: ${file}\n"
+
+    python build_graphs.py -meshfile $file -M $quad_order -max_size $max_elements
+
+done
+
+
+printf "\nFinished generating graphs for the meshs. Converting the files to the ECL binary format.\n"
+
+
+# Convert the formatting for the graph data 
+for file in $meshfile_list  
+do
+
+    # Generate the name of the directory that holds the graphs for this meshfile
+    src_dir="${file}-M-${quad_order}" 
+
+    python convert_files.py -src $src_dir -exe $executable 
+
+done
+
+
+printf "\nFinished converting the data sets. Done!\n"
+
+
+
+
+
+
+
+
+
+
+

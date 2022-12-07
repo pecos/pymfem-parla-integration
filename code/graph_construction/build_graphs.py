@@ -35,9 +35,8 @@ from os.path import expanduser, join
 # Parse the command line data
 parser = argparse.ArgumentParser(description="Build directed graphs for a discrete ordinates calculation.")
 parser.add_argument("-meshfile", default="star.mesh", type=str, help="Mesh file to use.")
-parser.add_argument("-order", default=1, type=int,
-                    help="Finite element order (polynomial degree) or -1 for isoparametric space.")
 parser.add_argument("-M", type=int, default=4, help="Order of the Chebyshev-Legendre quadrature.")
+parser.add_argument("-max_size", type=int, default=100000, help="Upper limit on the total number of mesh elements.")
 
 args = parser.parse_args()
 
@@ -50,14 +49,15 @@ print("\n")
 
 # Set some variables from the command line input
 meshfile = args.meshfile
-order = args.order
 M = args.M
+max_size = args.max_size
 
 meshfile_path = expanduser(join(os.path.dirname(__file__), '../PyMFEM/', 'data', meshfile))
 
 
 import numpy as np
 import scipy.sparse as sparse
+import scipy.io as io
 
 import mfem.ser as mfem
 
@@ -191,10 +191,8 @@ def build_directed_graph(mesh, ordinate, fname):
     # Change the dok_matrix to a csr format
     dir_graph_csr = dir_graph.tocsr(copy=False)
 
-    #print("dir_graph_csr:\n", dir_graph_csr)
-
-    # Write the sparse data to a file 
-    sparse.save_npz(fname + ".npz", dir_graph_csr)
+    # Write the sparse matrix to a Matrix Market format
+    io.mmwrite(fname + ".mtx", dir_graph_csr, comment="", field="integer", precision=None, symmetry=None)
 
     return None
 
@@ -202,7 +200,7 @@ def build_directed_graph(mesh, ordinate, fname):
 
 def main():
 
-    global meshfile, meshfile_path, order, M
+    global meshfile, meshfile_path, M, max_size
 
     # Read in the meshfile
     mesh = mfem.Mesh(meshfile_path, 1, 1)
@@ -214,40 +212,13 @@ def main():
 
     # Refine the mesh to increase the resolution. In this example we do
     # 'ref_levels' of uniform refinement. We choose 'ref_levels' to be the
-    # largest number that gives a final mesh with no more than 50,000
-    # elements.
-    ref_levels = int(np.floor(np.log(50000. / mesh.GetNE()) / np.log(2.) /dim))
+    # largest number that gives a final mesh with no more than 'max_size'elements.
+    ref_levels = int(np.floor(np.log(max_size / mesh.GetNE()) / np.log(2.) /dim))
 
     for x in range(ref_levels):
         mesh.UniformRefinement()
 
-    # Define a finite element space on the mesh. Here we use vector finite
-    # elements, i.e. dim copies of a scalar finite element space. The vector
-    # dimension is specified by the last argument of the FiniteElementSpace
-    # constructor. For NURBS meshes, we use the (degree elevated) NURBS space
-    # associated with the mesh nodes.
-    if order > 0:
-        fec = mfem.H1_FECollection(order, dim)
-    elif mesh.GetNodes():
-        fec = mesh.GetNodes().OwnFEC()
-        print("Using isoparametric FEs: " + str(fec.Name()))
-    else:
-        order = 1
-        fec = mfem.H1_FECollection(order, dim)
-    fespace = mfem.FiniteElementSpace(mesh, fec)
-    print("Number of finite element unknowns: " + str(fespace.GetTrueVSize()))
-
-    # Determine the list of true (i.e. conforming) essential boundary dofs.
-    # In this example, the boundary conditions are defined by marking all
-    # the boundary attributes from the mesh as essential (Dirichlet) and
-    # converting them to a list of true dofs.
-    ess_tdof_list = mfem.intArray()
-
-    if mesh.bdr_attributes.Size() > 0:
-        ess_bdr = mfem.intArray([1] * mesh.bdr_attributes.Max())
-        ess_bdr = mfem.intArray(mesh.bdr_attributes.Max())
-        ess_bdr.Assign(1)
-        fespace.GetEssentialTrueDofs(ess_bdr, ess_tdof_list)
+    print("Number of finite elements: " + str(mesh.GetNE()))
 
     # Construct the ordinate arrays for the mesh based on the dimension
     # We use Chebyshev-Legendre nodes for this
@@ -272,7 +243,7 @@ def main():
     output_dir = meshfile.replace(".data","") + "-M-" + str(M)
 
     # Remove this directory and its contents
-    os.system("rm -rf " + output_dir)
+    os.system(" ".join(["rm", "-rf", output_dir]))
     os.makedirs(output_dir)
 
     build_start = time.perf_counter()
