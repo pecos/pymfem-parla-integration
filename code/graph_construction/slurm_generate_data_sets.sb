@@ -49,11 +49,10 @@ meshfile_list="star.mesh toroid-wedge.mesh toroid-hex.mesh beam-hex.mesh"
 quad_order=4
 
 # Specify the upper bound on the number of elements for any given mesh
-max_elements=100000
+max_elements=1000000
 
 # Specify the file (executable) used to generate the ECL binary format
 executable=mm2ecl
-
 
 # First, for each mesh, generate all the directed graphs and store the output in Matrix-Market format
 for file in $meshfile_list  
@@ -64,9 +63,7 @@ do
 
 done
 
-
 printf "\nFinished generating graphs for the meshs. Converting the files to the ECL binary format.\n"
-
 
 # Convert the formatting for the graph data 
 for file in $meshfile_list  
@@ -79,16 +76,7 @@ do
 
 done
 
-
 printf "\nFinished converting the data sets. Done!\n"
-
-
-
-
-
-
-
-
 
 
 

@@ -29,7 +29,7 @@
 
 import argparse
 import os
-from os.path import expanduser, join
+from os.path import expanduser, join 
 
 
 # Parse the command line data
@@ -37,6 +37,7 @@ parser = argparse.ArgumentParser(description="Build directed graphs for a discre
 parser.add_argument("-meshfile", default="star.mesh", type=str, help="Mesh file to use.")
 parser.add_argument("-M", type=int, default=4, help="Order of the Chebyshev-Legendre quadrature.")
 parser.add_argument("-max_size", type=int, default=100000, help="Upper limit on the total number of mesh elements.")
+parser.add_argument("-debug", type=bool, default=False, help="Whether or not to run the debug script. If true, we don't run main!")
 
 args = parser.parse_args()
 
@@ -51,8 +52,10 @@ print("\n")
 meshfile = args.meshfile
 M = args.M
 max_size = args.max_size
+run_debug = args.debug
 
-meshfile_path = expanduser(join(os.path.dirname(__file__), '../PyMFEM/', 'data', meshfile))
+# Specify the location of the FEM meshfile
+meshfile_path = expanduser(join(os.path.dirname(__file__), "./sample_meshes/", meshfile))
 
 
 import numpy as np
@@ -126,14 +129,14 @@ def get_chebyshev_legendre_quadrature3D(N):
 
 def build_directed_graph(mesh, ordinate, fname):
     """
-    Helper function to build a directed graph for a given
-    ordinate using an unstructured mesh.
+    Helper function to build a directed graph, for a given
+    ordinate, using an unstructured mesh.
 
     The basic procedure is as follows. For each interior face:
     1) Compute the normal vector for that is shared by a pair of elements.
     2) Determine the orientation of the normal relative to the ordinate.
-    3) Write the corresponding entry into a sparse data structure.
-    4) Write the sparse data to a file
+    3) Write the corresponding entries into a sparse data structure.
+    4) Write the sparse data to a file.
 
     Note: The filename that is passed in does not include an
     extension. We supply it inside this function, since we are
@@ -159,11 +162,12 @@ def build_directed_graph(mesh, ordinate, fname):
     for i in range(mesh.GetNumFaces()):
 
         # There are no elements upwind of exterior faces 
+        # so we only look at those on the interior
         if mesh.FaceIsInterior(i):
 
             # Get the elements and transformation associated with this shared face
-            # Note: The convention is that the normal vector for element 2 is taken to be
-            # the normal vector for element 1 multiplied by -1.
+            # Note: The convention is that the normal vector for element 2 points
+            # in the opposite direction as the normal vector for element 1
             elem1, elem2 = mesh.GetFaceElements(i)
 
             # PyMFEM doesn't allow us to access the mesh method "GetFaceElementTransformations"
@@ -176,17 +180,30 @@ def build_directed_graph(mesh, ordinate, fname):
 
             # Compute the normal vector (not necessarily unit length)
             # We take this to be associated with element 1
+            # See: https://mfem.org/howto/outer_normals/
             mfem.CalcOrtho(FTr.Jacobian(), normal)
 
             # Now check the orientation of the normal relative to the ordinate
-            if np.dot(ordinate, normal.GetDataArray()) > 0.0:
+            alignment = np.dot(ordinate, normal.GetDataArray())
 
-                # The normal points in the same direction as the ordinate 
-                # This means that there is an edge connecting elem1 to elem2
+            if alignment > 0.0:
+
+                # The normal on element 1 aligns with the ordinate so
+                # there is an edge connecting elem1 to elem2
                 dir_graph[elem1, elem2] = 1
 
-            # We use the convention that element faces orthogonal to the ordinate
-            # are not considered to be downwind
+            elif alignment < 0.0:
+
+                # If the normal on element 1 points in the opposite direction
+                # of the ordinate, there is an edge connecting elem2 to elem1
+                # In other words, the normal on element 2 is aligned
+                 dir_graph[elem2, elem1] = 1
+
+            else:
+
+                # We use the convention that element faces orthogonal to the ordinate
+                # are not considered to be upwind/downwind, so we do nothing here.
+                pass
 
     # Change the dok_matrix to a csr format
     dir_graph_csr = dir_graph.tocsr(copy=False)
@@ -196,6 +213,118 @@ def build_directed_graph(mesh, ordinate, fname):
 
     return None
 
+
+def debug_directed_graph(mesh, ordinate):
+    """
+    Helper function to debug the construction of a directed graph, for a given
+    ordinate, using an unstructured mesh.
+    """
+
+    # Number of mesh elements and problem dimension
+    NE = mesh.GetNE()
+    dim = mesh.Dimension()
+
+    # The mesh dimension and ordinate dimension should match
+    assert dim == ordinate.size
+
+    # Create mfem::Vector to hold the norm of the face
+    normal = mfem.Vector(dim)
+
+    for i in range(mesh.GetNumFaces()):
+
+        # There are no elements upwind of exterior faces 
+        # so we only look at those on the interior
+        if mesh.FaceIsInterior(i):
+
+            # Get the elements and transformation associated with this shared face
+            # Note: The convention is that the normal vector for element 2 points
+            # in the opposite direction as the normal vector for element 1
+            elem1, elem2 = mesh.GetFaceElements(i)
+
+            # PyMFEM doesn't allow us to access the mesh method "GetFaceElementTransformations"
+            # Instead, we call the "GetFaceTransformation" method and associate the norm with elem1
+            FTr = mesh.GetFaceTransformation(i)
+
+            # Set the point at which the Jacobian is to be evaluated. This will give the orientation
+            # of the normal vector. We use the geometric center of the face
+            FTr.SetIntPoint(mfem.Geometries.GetCenter(FTr.GetGeometryType()))
+
+            # Compute the normal vector (not necessarily unit length)
+            # We take this to be associated with element 1
+            # See: https://mfem.org/howto/outer_normals/
+            mfem.CalcOrtho(FTr.Jacobian(), normal)
+
+            # Test code:
+            print("Working on face i = %d"%i)
+
+            print("elem1 = %d"%elem1)
+            print("elem2 = %d"%elem2)
+
+            # Compute the element centers
+            elem1_center = mesh.GetElementCenterArray(elem1)
+            elem2_center = mesh.GetElementCenterArray(elem2)
+
+            print("elem1 center = ", elem1_center)
+            print("elem2 center = ", elem2_center)
+
+            print("ordinate = ", ordinate)
+            print("Normal vector associated with elem1 = ", normal.GetDataArray())
+            print("Dot product elem1 n_f * ordinate = ", np.dot(ordinate, normal.GetDataArray()))
+            print("Dot product elem2 n_f * ordinate = ", np.dot(ordinate, -normal.GetDataArray()))
+
+            print("\n")
+
+    return None
+
+
+def debug_setup():
+    """
+    Simple script to aid the debugging of the graph traversal
+
+    We fix some ordinate directions and check that the conditions
+    are met for storing an edge, based on the physical location of the elements.
+
+    This won't work for all elements, but it is a quick way to check the basic components.
+    """
+
+    global meshfile, meshfile_path, M, max_size
+
+    # Read in the meshfile
+    mesh = mfem.Mesh(meshfile_path, 1, 1)
+    dim = mesh.Dimension()
+
+    print("Number of spatial dimensions: %d"%dim)
+
+    assert dim == 2, "Error: We only support 2-D meshes for debugging."
+
+    # Keep the mesh coarse for debugging purposes
+
+    print("Number of finite elements: " + str(mesh.GetNE()))
+
+    # Hard code the ordinate_directions for a 2-D case
+    # For this, we'll look at the unit vectors to make sure things point in the correct direction
+    ord_case0 = np.array([1.0,0.0])
+    ord_case1 = np.array([-1.0,0.0])
+    ord_case2 = np.array([0.0, 1.0])
+    ord_case3 = np.array([0.0,-1.0])
+
+    # Case 0:
+    debug_directed_graph(mesh, ord_case0)
+    print("Finished processing test ordinate 0.\n")
+
+    # Case 1:
+    debug_directed_graph(mesh, ord_case1)
+    print("Finished processing test ordinate 1.\n")
+
+    # Case 2:
+    debug_directed_graph(mesh, ord_case2)
+    print("Finished processing test ordinate 2.\n")
+
+    # Case 3:
+    debug_directed_graph(mesh, ord_case3)
+    print("Finished processing test ordinate 3.\n")
+
+    return None
 
 
 def main():
@@ -240,7 +369,8 @@ def main():
 
     # Specify the directory to store the graph data files that have been created
     # We will give it the name of the mesh and the order of the angular quadrature
-    output_dir = meshfile.replace(".data","") + "-M-" + str(M)
+    # See: https://stackoverflow.com/questions/3548673/how-can-i-replace-or-strip-an-extension-from-a-filename-in-python
+    output_dir = os.path.splitext(meshfile)[0] + "-M-" + str(M)
 
     # Remove this directory and its contents
     os.system(" ".join(["rm", "-rf", output_dir]))
@@ -254,9 +384,10 @@ def main():
         s_idx = dim*n
         e_idx = s_idx + dim
 
-        # Put the file name here, but do not include the extension ".data" or file type
+        # Put the file name here, but do not include the extension or file type
+        # See: https://stackoverflow.com/questions/3548673/how-can-i-replace-or-strip-an-extension-from-a-filename-in-python
         # The file type is specified in the function that builds the graph
-        file_name = output_dir + "/" + meshfile.replace(".data","") + "-M-" + str(M) + "-idx-" + str(n)
+        file_name = output_dir + "/" + os.path.splitext(meshfile)[0] + "-M-" + str(M) + "-idx-" + str(n)
 
         build_directed_graph(mesh, ordinates_cl[s_idx:e_idx], file_name)
 
@@ -269,7 +400,13 @@ def main():
 
 if __name__ == "__main__":
 
-    main()
+    if run_debug:
+
+        debug_setup()
+
+    else:
+
+        main()
 
 
 
