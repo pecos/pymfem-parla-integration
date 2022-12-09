@@ -71,11 +71,18 @@ def check_graphs_for_sccs(src_dir):
         # as being directed to set the class constructor internally
         G = nx.from_scipy_sparse_matrix(adj_data, create_using=nx.DiGraph)
 
-        # Compute the number of strongly connected components in G
-        # This step requires G to be a directed graph, or it emits an exception 
-        num_sccs = nx.number_strongly_connected_components(G)
+        # Determine the subsets of nodes that form SCCs (if they exist)
+        # We sort them such that the largest subsets are placed first
+        # This step requires G to be a directed graph, or it emits an exception
+        scc_list = [scc for scc in sorted(nx.strongly_connected_components(G), key=len, reverse=True)]
     
-        print("In the graph associated with file %s, %d SCCs were found."%(f, num_sccs))
+        # Extract the list of sets of sccs that contain more than one node
+        # These are the nodes that contain a cycle
+        nontrivial_scc_list = [item for item in scc_list if len(item) > 1 ]
+
+        print("Graph associated with file: %s"%f)
+        print("Total number of SCCs found: %d"%len(scc_list))
+        print("Number of non-trivial SCCs found: %d"%len(nontrivial_scc_list))
 
     return None
 
@@ -85,6 +92,10 @@ if __name__ == "__main__":
     assert src_dir is not None, "Error: No source directory was specified."
 
     check_graphs_for_sccs(src_dir)
+
+
+
+
 
 
 
