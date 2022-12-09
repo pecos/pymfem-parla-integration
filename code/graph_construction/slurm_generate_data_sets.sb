@@ -8,14 +8,12 @@
 # Last revised: 6 December 2022
 #
 # Notes: This particular script launches a python
-# script that builds a collection of directed,
+# script that analyzes a collection of directed,
 # possibly cyclic graphs associated with the traversal
-# of a unstructured finite element meshes. We also
-# convert the output (in MM format) to the ECL format.
+# of a unstructured finite element meshes.
 #
-# Note: We assume that the conversion tool has already
-# been compiled in advance. If it is not, then an error
-# will be thrown.
+# We assume that the graph files have already been generated
+# and are available in Matrix-Market format.
 #----------------------------------------------------
 
 #SBATCH -J generate_data          # Job name
