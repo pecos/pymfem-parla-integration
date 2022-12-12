@@ -170,40 +170,64 @@ def build_directed_graph(mesh, ordinate, fname):
             # in the opposite direction as the normal vector for element 1
             elem1, elem2 = mesh.GetFaceElements(i)
 
+            # Conventions for MFEM regarding conforming and non-conforming faces
+            # Conforming: Element 1 (smaller ID) handles the integration
+            # Non-conforming: The slave element handles the integration
+            # Source: FaceInfo documentation
+            #
+            # Question: How to access the bool: NCFace?
+            # This is normally part of the FaceInfo struct, but the method below doesn't
+            # seem to allow access to this....
+            # elem1Inf, elem2Inf = mesh.GetFaceInfos(i)
+
+            # Once this situation is resolved, we need to add a condition
+            # that checks if these conventions are met, and if so, perform those
+            # steps. Also, we should be careful with the ordering of the elements
+
             # PyMFEM doesn't allow us to access the mesh method "GetFaceElementTransformations"
             # Instead, we call the "GetFaceTransformation" method and associate the norm with elem1
             FTr = mesh.GetFaceTransformation(i)
 
-            # Set the point at which the Jacobian is to be evaluated. This will give the orientation
-            # of the normal vector. We use the geometric center of the face
-            FTr.SetIntPoint(mfem.Geometries.GetCenter(FTr.GetGeometryType()))
+            # Get the integration rule which will be used to set the points evaluating the normal
+            # We will use the order extracted from the element face transformation to do this
+            ir = mfem.IntRules.Get(FTr.FaceGeom, 2*FTr.Order())
 
-            # Compute the normal vector (not necessarily unit length)
-            # We take this to be associated with element 1
-            # See: https://mfem.org/howto/outer_normals/
-            mfem.CalcOrtho(FTr.Jacobian(), normal)
+            # Next, we will loop over the integration points in the rule and compute the
+            # normal at each of these points. We then determine the orientation of this
+            # point relative to the ordinate direction. 
+            for j in range(ir.GetNPoints()):
 
-            # Now check the orientation of the normal relative to the ordinate
-            alignment = np.dot(ordinate, normal.GetDataArray())
+                # Extract the integration point and set the location in the transformation object
+                # This gives an orientation to the normal vector
+                ip = ir.IntPoint(j)
+                FTr.SetIntPoint(ip)
 
-            if alignment > 0.0:
+                # Compute the normal vector (not necessarily unit length)
+                # We take this to be associated with element 1
+                # See: https://mfem.org/howto/outer_normals/
+                mfem.CalcOrtho(FTr.Jacobian(), normal)
 
-                # The normal on element 1 aligns with the ordinate so
-                # there is an edge connecting elem1 to elem2
-                dir_graph[elem1, elem2] = 1
+                # Now check the orientation of the normal relative to the ordinate
+                alignment = np.dot(ordinate, normal.GetDataArray())
 
-            elif alignment < 0.0:
+                if alignment > 0.0:
 
-                # If the normal on element 1 points in the opposite direction
-                # of the ordinate, there is an edge connecting elem2 to elem1
-                # In other words, the normal on element 2 is aligned
-                 dir_graph[elem2, elem1] = 1
+                    # The normal on element 1 aligns with the ordinate so
+                    # there is an edge connecting elem1 to elem2
+                    dir_graph[elem1, elem2] = 1
 
-            else:
+                elif alignment < 0.0:
 
-                # We use the convention that element faces orthogonal to the ordinate
-                # are not considered to be upwind/downwind, so we do nothing here.
-                pass
+                    # If the normal on element 1 points in the opposite direction
+                    # of the ordinate, there is an edge connecting elem2 to elem1
+                    # In other words, the normal on element 2 is aligned
+                    dir_graph[elem2, elem1] = 1
+
+                else:
+
+                    # We use the convention that element faces orthogonal to the ordinate
+                    # are not considered to be upwind/downwind, so we do nothing here.
+                    pass
 
     # Change the dok_matrix to a csr format
     dir_graph_csr = dir_graph.tocsr(copy=False)
