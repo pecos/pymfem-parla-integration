@@ -30,7 +30,10 @@
 import argparse
 import os
 from os.path import expanduser, join 
+import sys
 
+# Add the location of the PyMFEM directory to the path
+sys.path.append("../PyMFEM/mfem")
 
 # Parse the command line data
 parser = argparse.ArgumentParser(description="Build directed graphs for a discrete ordinates calculation.")
@@ -190,7 +193,7 @@ def build_directed_graph(mesh, ordinate, fname):
 
             # Get the integration rule which will be used to set the points evaluating the normal
             # We will use the order extracted from the element face transformation to do this
-            ir = mfem.IntRules.Get(FTr.FaceGeom, 2*FTr.Order())
+            ir = mfem.IntRules.Get(mesh.GetFaceGeometry(i), 2*FTr.Order())
 
             # Next, we will loop over the integration points in the rule and compute the
             # normal at each of these points. We then determine the orientation of this
@@ -393,8 +396,7 @@ def main():
 
     # Specify the directory to store the graph data files that have been created
     # We will give it the name of the mesh and the order of the angular quadrature
-    # See: https://stackoverflow.com/questions/3548673/how-can-i-replace-or-strip-an-extension-from-a-filename-in-python
-    output_dir = os.path.splitext(meshfile)[0] + "-M-" + str(M)
+    output_dir = meshfile + "-M-" + str(M)
 
     # Remove this directory and its contents
     os.system(" ".join(["rm", "-rf", output_dir]))
@@ -408,10 +410,9 @@ def main():
         s_idx = dim*n
         e_idx = s_idx + dim
 
-        # Put the file name here, but do not include the extension or file type
-        # See: https://stackoverflow.com/questions/3548673/how-can-i-replace-or-strip-an-extension-from-a-filename-in-python
+        # Base file name where the graph data will be stored
         # The file type is specified in the function that builds the graph
-        file_name = output_dir + "/" + os.path.splitext(meshfile)[0] + "-M-" + str(M) + "-idx-" + str(n)
+        file_name = output_dir + "/" + meshfile + "-M-" + str(M) + "-idx-" + str(n)
 
         build_directed_graph(mesh, ordinates_cl[s_idx:e_idx], file_name)
 

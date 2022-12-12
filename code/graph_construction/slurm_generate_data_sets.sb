@@ -22,7 +22,7 @@
 #SBATCH -p small           # Queue (partition) name
 #SBATCH -N 1               # Total # of nodes (must be 1 for serial)
 #SBATCH -n 56              # Total # of cores
-#SBATCH -t 01:00:00        # Run time (hh:mm:ss)
+#SBATCH -t 01:30:00        # Run time (hh:mm:ss)
 #SBATCH --mail-type=all    # Send email at begin and end of job
 #SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
 #SBATCH --mail-user=william.sands@austin.utexas.edu
@@ -52,29 +52,24 @@ max_elements=1000000
 # Specify the file (executable) used to generate the ECL binary format
 executable=mm2ecl
 
-# First, for each mesh, generate all the directed graphs and store the output in Matrix-Market format
 for file in $meshfile_list  
 do
     printf "Meshfile: ${file}\n"
 
+    # First, for each mesh, generate all the directed graphs and store the output in Matrix-Market format
     python build_graphs.py -meshfile $file -M $quad_order -max_size $max_elements
 
-done
+    # Get the name of the output directory to be converted
+    src_dir="${file}-M-${quad_order}"
 
-printf "\nFinished generating graphs for the meshs. Converting the files to the ECL binary format.\n"
+    # Convert the formatting for the graph data
+    python convert_files.py -src $src_dir -exe $executable
 
-# Convert the formatting for the graph data 
-for file in $meshfile_list  
-do
-
-    # Generate the name of the directory that holds the graphs for this meshfile
-    src_dir="${file}-M-${quad_order}" 
-
-    python convert_files.py -src $src_dir -exe $executable 
+    # Clean up the source directory to save some space
+    rm -r $src_dir
 
 done
 
-printf "\nFinished converting the data sets. Done!\n"
-
+printf "\nFinished generating graphs for the meshs. Done!\n"
 
 

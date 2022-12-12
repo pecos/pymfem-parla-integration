@@ -66,9 +66,9 @@ def convert_files(src, exe):
         # so we need to make sure that the full paths are specified
         input_file_path = os.path.join(src, f)
 
-        # Strip the extension from the input file and change it to ecl
+        # Strip the extension from the input file and change it to egr
         # See: https://stackoverflow.com/questions/3548673/how-can-i-replace-or-strip-an-extension-from-a-filename-in-python
-        output_file = os.path.splitext(f)[0] + ".ecl"
+        output_file = os.path.splitext(f)[0] + ".egr"
         output_file_path = os.path.join(dst, output_file)
 
         # Call the executable on the input and output files
