@@ -1,6 +1,7 @@
 import argparse
 import os
 from os.path import expanduser, join
+import sys
 
 # Parse the command line data
 parser = argparse.ArgumentParser(description='Multi-GPU reduction using PArrays')
@@ -43,6 +44,10 @@ else:
 
 gpus = cuda_visible_devices[:ngpus]
 os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, gpus))
+
+dirname = os.path.dirname(__file__)
+parla_dir = dirname + "/../Parla.py/"
+sys.path.append(parla_dir)
 
 import numpy as np
 import cupy as cp
@@ -106,7 +111,7 @@ def main():
             print("A_pa =", A_pa, "\n")
             print("Preparing to start the reduction task.\n")
 
-            parla_time = time.perf_counter()
+            parla_start = time.perf_counter()
 
             # Perform the reduction of the PArray on the device
             @spawn(taskid=rts[trial_idx], placement=gpu[0], input=[A_pa], dependencies=[sts[trial_idx,0:blocks]])
