@@ -40,7 +40,8 @@ cd ~/Projects/pymfem-parla-integration/code/graph_construction
 conda activate PyMFEM_env
 
 # Specify the list of mesh files that are to be used
-meshfile_list="star toroid-wedge toroid-hex beam-hex"
+#meshfile_list="star.mesh toroid-wedge.mesh toroid-hex.mesh beam-hex.mesh"
+meshfile_list="toroid-wedge.mesh"
 
 # Specify the order of the angular quadrature used
 quad_order_list="4"

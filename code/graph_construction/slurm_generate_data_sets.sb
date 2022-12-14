@@ -5,7 +5,7 @@
 #
 #   *** Job in Small Queue***
 # 
-# Last revised: 6 December 2022
+# Last revised: 13 December 2022
 #
 # Notes: This particular script launches a python
 # script that analyzes a collection of directed,
@@ -22,7 +22,7 @@
 #SBATCH -p small           # Queue (partition) name
 #SBATCH -N 1               # Total # of nodes (must be 1 for serial)
 #SBATCH -n 56              # Total # of cores
-#SBATCH -t 01:30:00        # Run time (hh:mm:ss)
+#SBATCH -t 01:15:00        # Run time (hh:mm:ss)
 #SBATCH --mail-type=all    # Send email at begin and end of job
 #SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
 #SBATCH --mail-user=william.sands@austin.utexas.edu
@@ -38,7 +38,9 @@ cd ~/Projects/pymfem-parla-integration/code/graph_construction
 conda activate PyMFEM_env
 
 # Specify the list of mesh files that are to be used
-meshfile_list="star.mesh toroid-wedge.mesh toroid-hex.mesh beam-hex.mesh"
+# Most meshes take ~ 1 hr to process, but the torch meshes may take a bit longer
+#meshfile_list="star.mesh toroid-wedge.mesh toroid-hex.mesh beam-hex.mesh cold-flow-sponge-tao4-r2.msh cold-flow-spongezone3.c1.msh"
+meshfile_list="toroid-wedge.mesh"
 
 # Specify the order of the angular quadrature used
 # This provides a collection of directions that provide an orientation to the traversal
@@ -60,13 +62,13 @@ do
     python build_graphs.py -meshfile $file -M $quad_order -max_size $max_elements
 
     # Get the name of the output directory to be converted
-    src_dir="${file}-M-${quad_order}"
+    #src_dir="${file}-M-${quad_order}"
 
     # Convert the formatting for the graph data
-    python convert_files.py -src $src_dir -exe $executable
+    #python convert_files.py -src $src_dir -exe $executable
 
     # Clean up the source directory to save some space
-    rm -r $src_dir
+    #rm -r $src_dir
 
 done
 

@@ -47,7 +47,9 @@ def run(order=1, static_cond=False,
     pmesh = mfem.ParMesh(MPI.COMM_WORLD, mesh)
     del mesh
 
-    par_ref_levels = 2
+    #par_ref_levels = 2
+    par_ref_levels = 0 # Don't refine the mesh anymore...
+
     for l in range(par_ref_levels):
         pmesh.UniformRefinement()
 

@@ -37,6 +37,7 @@
 import argparse
 import os
 from os.path import expanduser, join
+import sys
 
 # Parse the command line options
 parser = argparse.ArgumentParser(description='Ex1 (Laplace Problem)')
@@ -100,6 +101,10 @@ else:
 
 gpus = cuda_visible_devices[:ngpus]
 os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, gpus))
+
+dirname = os.path.dirname(__file__)
+parla_dir = dirname + "/../Parla.py/"
+sys.path.append(parla_dir)
 
 import numpy as np
 import cupy as cp
@@ -358,6 +363,9 @@ def run(order=1, static_cond=False,
     # hold partial sums of this global array
     global_element_blocks_pa = parray.asarray( np.zeros([num_blocks, gdof]) )
 
+    # Place where we will store the result of the reduction
+    reduction_result = parray.asarray( np.zeros([gdof]) )
+
     # Launch the dummy kernel on device 0
     with cp.cuda.Device(0):
 
@@ -464,66 +472,24 @@ def run(order=1, static_cond=False,
             # Barrier for the task space associated with the loop over blocks
             await lfts
 
-
-
-            # The device reduction hangs for some reason...
-
-            # Create CuPy array on device 0 to store the output of the reduction across blocks
-            global_element_gpu = cp.zeros([gdof]) 
-
-            print("About to start the reduction task.\n")
-
-            # Printing the array without a context results in a print statement from each device
-            # Only let device 0 print the PArray
-            with cp.cuda.Device(0):
-                print("global_element_blocks_pa =", global_element_blocks_pa, "\n")
-
-                # Note: Could try using dependencies=ts[:,:], which should unpack object into a list
-                # Better to use the explicit dependencies to be verbose
-                @spawn(taskid=lfts[trial_idx,num_blocks], placement=gpu[0], 
-                       input=[global_element_blocks_pa], dependencies=[lfts[trial_idx,0:num_blocks]])
-                def reduction_task():
-
-                    print("Made it inside the reduction task!\n")
-
+            # Note: Could try using dependencies=ts[:,:], which should unpack object into a list
+            # Better to use the explicit dependencies to be verbose
+            @spawn(taskid=lfts[trial_idx,num_blocks], placement=gpu[0], 
+                   input=[global_element_blocks_pa], output=[reduction_result],
+                   dependencies=[lfts[trial_idx,0:num_blocks]])
+            def reduction_task():
+    
+                    # Perform the device reduction of the PArray
                     #global_element_pa.update(cp.sum(global_element_blocks_pa.array, axis=0))
-                    #global_element_pa.update(np.sum(global_element_blocks_pa.array, axis=0))
 
-                    global_element_gpu[:] = cp.sum(global_element_blocks_pa.array, axis=0)
+                    reduction_result.update( cp.sum(global_element_blocks_pa.array, axis=0) )
 
-                await lfts
-
-
-
-
-            # This code works...
-            # Test the reduction on the host...
-            #global_element_cpu = np.zeros([gdof])
-
-            #@spawn(taskid=lfts[trial_idx,num_blocks], placement=cpu,
-            #       input=[global_element_blocks_pa], dependencies=[lfts[trial_idx,0:num_blocks]])
-            #def reduction_task():
-
-            #    global_element_cpu[:] = np.sum(global_element_blocks_pa.array, axis=0)    
-
-            #await lfts
+            await lfts
 
             parla_end = time.perf_counter()
             parla_times[trial_idx] = parla_end - parla_start
 
-
-
-
         # End of the trial loop
-
-
-
-        # Copy the GPU data on device 0 back to the host (not timed)
-        # Can also use the array.get() method to do this
-        global_element_cpu = cp.asnumpy(global_element_gpu)
-
-
-
 
         print("PyMFEM times (min, max, avg) [s]: ", pymfem_times.min(),",", 
                                                     pymfem_times.max(),",", 
@@ -543,7 +509,9 @@ def run(order=1, static_cond=False,
         # The 'FormLinearSystem' method, which performs additional manipulations
         # that simplify the RHS for the resulting linear system
         my_b = mfem.LinearForm(fespace)
-        my_b.Assign(global_element_cpu)
+        my_b.Assign(reduction_result.array)
+        #my_b.Assign(global_element_blocks_pa[0,:])
+        
 
         # 7. Define the solution vector x as a finite element grid function
         #   corresponding to fespace. Initialize x with initial guess of zero,
