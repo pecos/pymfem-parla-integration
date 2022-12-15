@@ -5,7 +5,7 @@
 #
 #   *** Job in Small Queue***
 # 
-# Last revised: 8 December 2022
+# Last revised: 14 December 2022
 #
 # Notes: This particular script launches a python
 # script that builds a collection of directed,
@@ -19,41 +19,44 @@
 #----------------------------------------------------
 
 #SBATCH -J sccs          # Job name
-#SBATCH -o sccs.o%j      # Name of stdout output file
-#SBATCH -e sccs.e%j      # Name of stderr error file
+#SBATCH -o /scratch1/09047/was2489/sccs.o%j      # Name of stdout output file
+#SBATCH -e /scratch1/09047/was2489/sccs.e%j      # Name of stderr error file
 #SBATCH -p small           # Queue (partition) name
 #SBATCH -N 1               # Total # of nodes (must be 1 for serial)
 #SBATCH -n 56              # Total # of cores
-#SBATCH -t 01:00:00        # Run time (hh:mm:ss)
+#SBATCH -t 00:01:00        # Run time (hh:mm:ss)
 #SBATCH --mail-type=all    # Send email at begin and end of job
 #SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
 #SBATCH --mail-user=william.sands@austin.utexas.edu
 
 # To use the conda environment and modules therein, we
 # need to source the conda.sh file
-source /home1/09047/was2489/miniconda3/etc/profile.d/conda.sh
+source ${HOME}/miniconda3/etc/profile.d/conda.sh
 
 # Go to the directory of the project
-cd ~/Projects/pymfem-parla-integration/code/graph_construction
+cd ${WORK}/Projects/pymfem-parla-integration/code/graph_construction
 
 # Activate the Python environment
 conda activate PyMFEM_env
 
 # Specify the list of mesh files that are to be used
 #meshfile_list="star.mesh toroid-wedge.mesh toroid-hex.mesh beam-hex.mesh"
-meshfile_list="toroid-wedge.mesh"
+meshfile_list="star.mesh"
 
 # Specify the order of the angular quadrature used
 quad_order_list="4"
+
+root_dir=${SCRATCH}
 
 for file in $meshfile_list  
 do
     for quad_order in $quad_order_list
     do
         # Generate the name of the directory that holds the graphs for this meshfile
-        src_dir="${file}-M-${quad_order}"
+        src_dir="${root_dir}/${file}-M-${quad_order}"
 
         printf "${src_dir}\n"
+
         python check_for_sccs.py -src $src_dir
 
     done

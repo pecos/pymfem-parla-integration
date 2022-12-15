@@ -5,7 +5,7 @@
 #
 #   *** Job in Small Queue***
 # 
-# Last revised: 6 December 2022
+# Last revised: 14 December 2022
 #
 # Notes: This particular script launches a python
 # script that builds a collection of directed,
@@ -20,8 +20,8 @@
 #----------------------------------------------------
 
 #SBATCH -J debug          # Job name
-#SBATCH -o debug.o%j      # Name of stdout output file
-#SBATCH -e debug.e%j      # Name of stderr error file
+#SBATCH -o $/scratch1/09047/was2489/debug.o%j      # Name of stdout output file
+#SBATCH -e $/scratch1/09047/was2489/debug.e%j      # Name of stderr error file
 #SBATCH -p small           # Queue (partition) name
 #SBATCH -N 1               # Total # of nodes (must be 1 for serial)
 #SBATCH -n 56              # Total # of cores
@@ -32,17 +32,17 @@
 
 # To use the conda environment and modules therein, we
 # need to source the conda.sh file
-source /home1/09047/was2489/miniconda3/etc/profile.d/conda.sh
+source ${HOME}/miniconda3/etc/profile.d/conda.sh
 
 # Go to the directory of the project
-cd ~/Projects/pymfem-parla-integration/code/graph_construction
+cd ${WORK}/Projects/pymfem-parla-integration/code/graph_construction
 
 # Remove any pre-existing debug files
 
 # Activate the Python environment
 conda activate PyMFEM_env
 
-python build_graphs.py -meshfile star.mesh -debug True > debug.out
+python build_graphs.py -meshfile star.mesh -debug True
 
 printf "\nFinished generating graphs for the mesh.\n"
 

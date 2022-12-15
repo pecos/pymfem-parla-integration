@@ -8,18 +8,15 @@
 # Last revised: 14 December 2022
 #
 # Notes: This particular script launches a python
-# script that analyzes a collection of directed,
-# possibly cyclic graphs associated with the traversal
-# of a unstructured finite element meshes.
+# script that converts sparse matrices for graphs
+# to the egr format used by the ECL at TSU.
 #
-# We assume that the graph files have already been generated
-# and are available in Matrix-Market format.
 #----------------------------------------------------
 
 # Can't use ${SCRATCH} here because sbatch doesn't understand shell commands...
-#SBATCH -J generate_data          # Job name
-#SBATCH -o /scratch1/09047/was2489/generate_data.o%j      # Name of stdout output file
-#SBATCH -e /scratch1/09047/was2489/generate_data.e%j      # Name of stderr error file
+#SBATCH -J convert_data          # Job name
+#SBATCH -o /scratch1/09047/was2489/convert_data.o%j      # Name of stdout output file
+#SBATCH -e /scratch1/09047/was2489/convert_data.e%j      # Name of stderr error file
 #SBATCH -p small           # Queue (partition) name
 #SBATCH -N 1               # Total # of nodes (must be 1 for serial)
 #SBATCH -n 56              # Total # of cores
@@ -49,9 +46,6 @@ meshfile_list="star.mesh"
 # take care when setting this value
 quad_order=4
 
-# Specify the upper bound on the number of elements for any given mesh
-max_elements=10000
-
 # Specify the location of the root where data files will be stored
 root_dir=${SCRATCH}
 
@@ -59,19 +53,15 @@ root_dir=${SCRATCH}
 # This is assumed to be in the CWD
 executable=mm2ecl
 
-
 for file in $meshfile_list  
 do
-    printf "Meshfile: ${file}\n"
-
-    # First, for each mesh, generate all the directed graphs and store the output in Matrix-Market format
-    python build_graphs.py -meshfile $file -M $quad_order -max_size $max_elements -root $root_dir
-
     # Get the name of the output directory to be converted
-    #src_dir="${root_dir}/${file}-M-${quad_order}"
+    # Note that this is not specified relative to the root, but this
+    # is done inside the processing script
+    src_dir="${root_dir}/${file}-M-${quad_order}"
 
     # Convert the formatting for the graph data
-    #python convert_npz_to_egr.py -src $src_dir -exe $executable
+    python convert_npz_to_egr.py -src $src_dir -exe $executable -root $root_dir
 
     # Clean up the source directory to save some space
     #rm -r $src_dir

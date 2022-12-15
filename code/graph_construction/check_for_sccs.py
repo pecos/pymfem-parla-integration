@@ -2,8 +2,8 @@
     Code to check for strongly connected components (SCCs) in directed graphs associated with 
     discrete ordinates methods on unstructured FEM meshes.
 
-    This executable takes a collection of files in a directory (assumed to be in .mtx format) and 
-    converts them into sparse graph adjacency matrices for subsequent processing with NetworkX tools.
+    This executable takes a collection of files in a directory (assumed to be in .npz format) and 
+    reads them into sparse graph adjacency matrices for subsequent processing with NetworkX tools.
 """
 
 import argparse
@@ -12,11 +12,11 @@ from os.path import join
 
 import networkx as nx
 import scipy.io as io
-import scipy.sparse as sp
+import scipy.sparse as sparse
 
 # Parse the command line data
 parser = argparse.ArgumentParser(description="Checks for strongly connected components (SCCs) in directed graphs using adjacency matrices.")
-parser.add_argument("-src_dir", default=None, type=str, help="Source directory containing files to be analyzed.")
+parser.add_argument("-src_dir", default=None, type=str, help="Source directory containing files to be analyzed. Assumed to be in .npz format.")
 
 args = parser.parse_args()
 
@@ -28,20 +28,6 @@ for arg in vars(args):
 print("\n")
 
 src_dir = args.src_dir
-
-
-def mtx_to_sparse(filename):
-    """
-    Converts a file from Matrix-Market format into a Scipy COO structure.
-    """
-
-    # Check that that extension is correct
-    file_ext = os.path.splitext(filename)[1]
-    assert file_ext == ".mtx", "Error: Check the extension for the source files."
-
-    # To ensure that the matrix is in the format needed by NetworkX, we convert
-    # the read output (either dense matrix or coo matrix) to a coo format
-    return sp.coo_matrix(io.mmread(filename))
 
 
 def check_graphs_for_sccs(src_dir):
@@ -64,7 +50,7 @@ def check_graphs_for_sccs(src_dir):
         input_file_path = os.path.join(src_dir, f)
 
         # Convert the file (specified by its path) to a sparse format
-        adj_data = mtx_to_sparse(input_file_path)
+        adj_data = sparse.load_npz(input_file_path)
 
         # Construct the directed graph structure using NetworkX
         # We have to explicitly mention the graph type

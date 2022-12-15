@@ -18,11 +18,14 @@ import argparse
 import os
 from os.path import join
 
+import scipy.sparse as sparse
+import scipy.io as io
 
 # Parse the command line data
 parser = argparse.ArgumentParser(description="Converts a collection of sparse matrix files to ECL files.")
 parser.add_argument("-src", default="", type=str, help="Source directory containing files to be converted.")
 parser.add_argument("-exe", default="", type=str, help="Executable that performs a single file conversion.")
+parser.add_argument("-root", default=".", type=str, help="Root directory where the output will be generated.")
 
 args = parser.parse_args()
 
@@ -35,21 +38,38 @@ print("\n")
 
 src = args.src
 exe = args.exe
+root = args.root
 
+def convert_npz_to_mtx(fname):
+    """
+    Helper function that converts files in a directory "src" from
+    npz to mtx formatting.
+    """
 
-def convert_files(src, exe):
+    # First load the sparse matrix dataset
+    data = sparse.load_npz(fname)
+
+    # Write it to matrix market format
+    fname_mtx = os.path.splitext(fname)[0] + ".mtx"
+    io.mmwrite(fname_mtx, data, comment='', field="integer")
+    
+    return fname_mtx
+
+def convert_npz_to_egr(src, exe, root):
     """
     Processes the files contained in the directory "src",
     converting them to ECL format with the executable "exe".
 
-    This function can be called on an entire directory at a time.
+    This function can be called on an entire directory at a time
+    and its output will be stored under root.
     """
 
     assert os.path.exists(exe), "Error: Executable does not exist."
 
     # Using the source directory "src", create the destination "dst" 
     # where the converted files will be stored
-    dst = "ECL-" + src
+    # We should remove any parts of source which overlap with the root
+    dst = root + "/" + "ECL-" + src.replace(root + "/","")
 
     # Remove any pre-existing destination directory if it already exists
     os.system(" ".join(["rm", "-rf", dst]))
@@ -66,13 +86,19 @@ def convert_files(src, exe):
         # so we need to make sure that the full paths are specified
         input_file_path = os.path.join(src, f)
 
-        # Strip the extension from the input file and change it to egr
-        # See: https://stackoverflow.com/questions/3548673/how-can-i-replace-or-strip-an-extension-from-a-filename-in-python
+        # Convert the file from .npz format to .mtx
+        # This is done inside the src directory
+        input_file_path_mtx = convert_npz_to_mtx(input_file_path)
+
+        # Strip the .npz extension from the input file and change it to egr
         output_file = os.path.splitext(f)[0] + ".egr"
         output_file_path = os.path.join(dst, output_file)
 
-        # Call the executable on the input and output files
-        os.system(" ".join([exe, input_file_path, output_file_path]))    
+        # Call the C++ executable that converts .mtx to .egr
+        os.system(" ".join([exe, input_file_path_mtx, output_file_path]))    
+
+        # Remove the mtx data file to keep storage reasonable
+        os.system(" ".join(["rm", input_file_path_mtx]))
 
         print("\n")
 
@@ -81,7 +107,7 @@ def convert_files(src, exe):
 
 if __name__ == "__main__":
 
-    convert_files(src, exe)
+    convert_npz_to_egr(src, exe, root)
 
 
 

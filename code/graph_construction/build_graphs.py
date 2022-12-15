@@ -40,7 +40,9 @@ parser = argparse.ArgumentParser(description="Build directed graphs for a discre
 parser.add_argument("-meshfile", default="star.mesh", type=str, help="Mesh file to use.")
 parser.add_argument("-M", type=int, default=4, help="Order of the Chebyshev-Legendre quadrature.")
 parser.add_argument("-max_size", type=int, default=100000, help="Upper limit on the total number of mesh elements.")
+parser.add_argument("-root", type=str, default=".", help="Root directory for the output")
 parser.add_argument("-debug", type=bool, default=False, help="Whether or not to run the debug script. If true, we don't run main!")
+
 
 args = parser.parse_args()
 
@@ -55,6 +57,7 @@ print("\n")
 meshfile = args.meshfile
 M = args.M
 max_size = args.max_size
+root = args.root
 run_debug = args.debug
 
 # Specify the location of the FEM meshfile
@@ -236,7 +239,10 @@ def build_directed_graph(mesh, ordinate, fname):
     dir_graph_csr = dir_graph.tocsr(copy=False)
 
     # Write the sparse matrix to a Matrix Market format
-    io.mmwrite(fname + ".mtx", dir_graph_csr, comment="", field="integer", precision=None, symmetry=None)
+    #io.mmwrite(fname + ".mtx", dir_graph_csr, comment="", field="integer", precision=None, symmetry=None)
+
+    # Write to a compressed npz format (extension will be appended to the file name)
+    sparse.save_npz(fname, dir_graph_csr, compressed=True)
 
     return None
 
@@ -304,7 +310,7 @@ def debug_directed_graph(mesh, ordinate):
     return None
 
 
-def debug_setup():
+def debug_setup(meshfile_path):
     """
     Simple script to aid the debugging of the graph traversal
 
@@ -313,8 +319,6 @@ def debug_setup():
 
     This won't work for all elements, but it is a quick way to check the basic components.
     """
-
-    global meshfile, meshfile_path, M, max_size
 
     # Read in the meshfile
     mesh = mfem.Mesh(meshfile_path, 1, 1)
@@ -354,9 +358,9 @@ def debug_setup():
     return None
 
 
-def main():
+def main(meshfile_path, M, max_size, root):
 
-    global meshfile, meshfile_path, M, max_size
+    #global meshfile, meshfile_path, M, max_size, root
 
     # Read in the meshfile
     mesh = mfem.Mesh(meshfile_path, 1, 1)
@@ -396,7 +400,7 @@ def main():
 
     # Specify the directory to store the graph data files that have been created
     # We will give it the name of the mesh and the order of the angular quadrature
-    output_dir = meshfile + "-M-" + str(M)
+    output_dir = root + "/" + meshfile + "-M-" + str(M)
 
     # Remove this directory and its contents
     os.system(" ".join(["rm", "-rf", output_dir]))
@@ -427,11 +431,11 @@ if __name__ == "__main__":
 
     if run_debug:
 
-        debug_setup()
+        debug_setup(meshfile_path)
 
     else:
 
-        main()
+        main(meshfile_path, M, max_size, root)
 
 
 
