@@ -5,7 +5,7 @@
 #
 #   *** Parallel Job in Small Queue***
 # 
-# Last revised: 8 November 2022
+# Last revised: 14 December 2022
 #
 # Notes: This particular script launches a python
 # script that benchmarks MFEM's linear form performance
@@ -14,8 +14,8 @@
 #----------------------------------------------------
 
 #SBATCH -J LF_cpu          # Job name
-#SBATCH -o LF_cpu.o%j      # Name of stdout output file
-#SBATCH -e LF_cpu.e%j      # Name of stderr error file
+#SBATCH -o /scratch1/09047/was2489/LF_cpu.o%j      # Name of stdout output file
+#SBATCH -e /scratch1/09047/was2489/LF_cpu.e%j      # Name of stderr error file
 #SBATCH -p small           # Queue (partition) name
 #SBATCH -N 1               # Total # of nodes (must be 1 for serial)
 #SBATCH -n 56              # Total # of cores
@@ -26,10 +26,10 @@
 
 # To use the conda environment and modules therein, we
 # need to source the conda.sh file
-source /home1/09047/was2489/miniconda3/etc/profile.d/conda.sh
+source ${HOME}/miniconda3/etc/profile.d/conda.sh
 
 # Go to the directory of the project
-cd ~/Projects/pymfem-parla-integration/code/LF_tests
+cd ${WORK}/Projects/pymfem-parla-integration/code/LF_tests
 
 # Activate the Python environment
 conda activate PyMFEM_env
