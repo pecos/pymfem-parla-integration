@@ -195,9 +195,9 @@ def inner_quad_kernel(block_element_array, l2g_map,
 def run(order=1, static_cond=False,
         meshfile='', visualization=False,
         device='cpu', ngpus=ngpus, pa=False):
-    '''
+    """
     run ex1
-    '''
+    """
     device = mfem.Device(device)
     device.Print()
 
@@ -212,8 +212,7 @@ def run(order=1, static_cond=False,
     #      largest number that gives a final mesh with no more than 50,000
     #      elements.
     #ref_levels = int(np.floor(np.log(50000./mesh.GetNE())/np.log(2.)/dim))
-    #ref_levels = int(np.floor(np.log(200000./mesh.GetNE())/np.log(2.)/dim))
-
+    #ref_levels = int(np.floor(np.log(2000000./mesh.GetNE())/np.log(2.)/dim))
     ref_levels = 6
 
     print("ref_levels =", ref_levels, "\n")
@@ -254,13 +253,15 @@ def run(order=1, static_cond=False,
     # 6. Set up the linear form b(.) which corresponds to the right-hand side of
     #   the FEM linear system, which in this case is (1,phi_i) where phi_i are
     #   the basis functions in the finite element fespace.
-    pymfem_times = np.zeros([num_trials]) # Store the times for statistics 
+    #pymfem_times = np.zeros([num_trials]) # Store the times for statistics 
+    pymfem_times = np.zeros([1]) # Hack for now until device is added
 
     b = mfem.LinearForm(fespace)
     one = mfem.ConstantCoefficient(1.0)
     b.AddDomainIntegrator(mfem.DomainLFIntegrator(one))
 
-    for trial_idx in range(num_trials):
+    #for trial_idx in range(num_trials):
+    for trial_idx in range(1):
 
         # Reset the value of the linear form
         # This is needed for correctness
@@ -268,13 +269,10 @@ def run(order=1, static_cond=False,
 
         # Only time the assemble function
         pymfem_start = time.perf_counter()
-
         b.Assemble()
-
         pymfem_end = time.perf_counter()
 
         pymfem_times[trial_idx] = pymfem_end - pymfem_start
-
 
     #-----------------------------------------------------------------------------
     # Version based on Parla
@@ -358,13 +356,16 @@ def run(order=1, static_cond=False,
     print("Number of left-over elements: " + str(leftover_elements))
     print("Elements per block:", element_block_sizes,"\n")
 
-    # To use the blocking scheme, we'll
-    # also use another set of arrays that
+    # To use the blocking scheme, we use another set of arrays that
     # hold partial sums of this global array
     global_element_blocks_pa = parray.asarray( np.zeros([num_blocks, gdof]) )
 
-    # Place where we will store the result of the reduction
-    reduction_result = parray.asarray( np.zeros([gdof]) )
+    # Array to store the result of the reduction
+    # Why does this become invalid at the end of the task?
+    #reduction_result_pa = parray.asarray( np.zeros([gdof]) )
+
+    # This works as intended
+    #print("Initialization: reduction_result_pa.array =", reduction_result_pa.array)
 
     # Launch the dummy kernel on device 0
     with cp.cuda.Device(0):
@@ -415,20 +416,16 @@ def run(order=1, static_cond=False,
                 # However, we account for the case that number of blocks > ngpus
                 # When there is only one device, then these should map to device 0
                 device_idx = i % ngpus
-
                 inout_data = [global_element_blocks_pa[i]]
 
                 @spawn(taskid=init[trial_idx,i], placement=gpu[device_idx], inout=inout_data)
                 def reset_block():
-
                     global_element_blocks_pa[i,:] = 0.0
-
                 await init[trial_idx,i]
 
             parla_start = time.perf_counter()
 
-            # Next we loop over each block which partitions the element indices
-            # and compute quadrature
+            # Next loop over each block which partitions the element indices and compute quadrature
             for i in range(num_blocks):
 
                 # Map the block to a specific device
@@ -475,14 +472,11 @@ def run(order=1, static_cond=False,
             # Note: Could try using dependencies=ts[:,:], which should unpack object into a list
             # Better to use the explicit dependencies to be verbose
             @spawn(taskid=lfts[trial_idx,num_blocks], placement=gpu[0], 
-                   input=[global_element_blocks_pa], output=[reduction_result],
+                   inout=[global_element_blocks_pa], 
                    dependencies=[lfts[trial_idx,0:num_blocks]])
             def reduction_task():
-    
-                    # Perform the device reduction of the PArray
-                    #global_element_pa.update(cp.sum(global_element_blocks_pa.array, axis=0))
 
-                    reduction_result.update( cp.sum(global_element_blocks_pa.array, axis=0) )
+                global_element_blocks_pa[0,:].array = cp.sum(global_element_blocks_pa.array, axis=0)
 
             await lfts
 
@@ -491,10 +485,13 @@ def run(order=1, static_cond=False,
 
         # End of the trial loop
 
-        print("PyMFEM times (min, max, avg) [s]: ", pymfem_times.min(),",", 
-                                                    pymfem_times.max(),",", 
-                                                    pymfem_times.mean(),
-                                                    "\n",flush=True)
+        #print("PyMFEM times (min, max, avg) [s]: ", pymfem_times.min(),",", 
+        #                                            pymfem_times.max(),",", 
+        #                                            pymfem_times.mean(),
+        #                                            "\n",flush=True)
+
+        # Hack until we have the MFEM device code working
+        print("\nPyMFEM time (CPU) [s]: ", pymfem_times[0], "\n",flush=True)
 
         print("Parla times (min, max, avg) [s] ", parla_times.min(),",",
                                                   parla_times.max(),",",
@@ -505,13 +502,15 @@ def run(order=1, static_cond=False,
         # End of the Parla test (the remainder checks for correctness)
         #-----------------------------------------------------------------------------
 
+        # This step gives "None". Why does the array become invalid and how to prevent this?
+        #print("(Finalize) reduction_result_pa.array =", reduction_result_pa.array)
+
         # Define my own linear form for the RHS based on the above function
         # The 'FormLinearSystem' method, which performs additional manipulations
         # that simplify the RHS for the resulting linear system
         my_b = mfem.LinearForm(fespace)
-        my_b.Assign(reduction_result.array)
-        #my_b.Assign(global_element_blocks_pa[0,:])
-        
+        my_b.Assign(global_element_blocks_pa[0,:].array)
+        #my_b.Assign(reduction_result_pa.array) # Fails because can't assign with type None
 
         # 7. Define the solution vector x as a finite element grid function
         #   corresponding to fespace. Initialize x with initial guess of zero,
