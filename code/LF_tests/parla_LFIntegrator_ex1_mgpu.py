@@ -360,9 +360,8 @@ def run(order=1, static_cond=False,
     # hold partial sums of this global array
     global_element_blocks_pa = parray.asarray( np.zeros([num_blocks, gdof]) )
 
-    # Array to store the result of the reduction
-    # Why does this become invalid at the end of the task?
-    #reduction_result_pa = parray.asarray( np.zeros([gdof]) )
+    # Device array to store the result of the reduction
+    reduction_result_cp = cp.zeros([gdof])
 
     # This works as intended
     #print("Initialization: reduction_result_pa.array =", reduction_result_pa.array)
@@ -469,8 +468,8 @@ def run(order=1, static_cond=False,
             # Barrier for the task space associated with the loop over blocks
             await lfts
 
-            print("Before the reduction task...\n")
-            print("global_element_blocks_pa =", global_element_blocks_pa, "\n")
+            #print("Before the reduction task...\n")
+            #print("global_element_blocks_pa =", global_element_blocks_pa, "\n")
 
             # Note: Could try using dependencies=ts[:,:], which should unpack object into a list
             # Better to use the explicit dependencies to be verbose
@@ -479,16 +478,18 @@ def run(order=1, static_cond=False,
                    dependencies=[lfts[trial_idx,0:num_blocks]])
             def reduction_task():
 
-                print("Inside the reduction task...\n")
-                print("global_element_blocks_pa =", global_element_blocks_pa, "\n")
+                #print("Inside the reduction task...\n")
+                #print("global_element_blocks_pa =", global_element_blocks_pa, "\n")
 
-                global_element_blocks_pa[0,:] = cp.sum(global_element_blocks_pa.array, axis=0)
+                #global_element_blocks_pa[0].array = cp.sum(global_element_blocks_pa.array, axis=0)
 
-                print("global_element_blocks_pa[0] =", global_element_blocks_pa[0], "\n")
-                print("global_element_blocks_pa[0,:] =", global_element_blocks_pa[0,:], "\n")
-                print("global_element_blocks_pa[0,:].array =", global_element_blocks_pa[0,:].array, "\n")
-                print("global_element_blocks_pa[0][:] =", global_element_blocks_pa[0][:], "\n")
-                print("global_element_blocks_pa[0].array =", global_element_blocks_pa[0].array, "\n")
+                #print("global_element_blocks_pa[0] =", global_element_blocks_pa[0], "\n")
+                #print("global_element_blocks_pa[0,:] =", global_element_blocks_pa[0,:], "\n")
+                #print("global_element_blocks_pa[0,:].array =", global_element_blocks_pa[0,:].array, "\n")
+                #print("global_element_blocks_pa[0][:] =", global_element_blocks_pa[0][:], "\n")
+                #print("global_element_blocks_pa[0].array =", global_element_blocks_pa[0].array, "\n")
+
+                reduction_result_cp[:] = cp.sum(global_element_blocks_pa.array, axis=0)
 
             await lfts
 
@@ -514,15 +515,13 @@ def run(order=1, static_cond=False,
         # End of the Parla test (the remainder checks for correctness)
         #-----------------------------------------------------------------------------
 
-        # This step gives "None". Why does the array become invalid and how to prevent this?
-        #print("(Finalize) reduction_result_pa.array =", reduction_result_pa.array)
-
         # Define my own linear form for the RHS based on the above function
         # The 'FormLinearSystem' method, which performs additional manipulations
         # that simplify the RHS for the resulting linear system
         my_b = mfem.LinearForm(fespace)
-        my_b.Assign(global_element_blocks_pa[0,:])
+        #my_b.Assign(global_element_blocks_pa[0].array)
         #my_b.Assign(reduction_result_pa.array) # Fails because can't assign with type None
+        my_b.Assign( cp.asnumpy(reduction_result_cp) )
 
         # 7. Define the solution vector x as a finite element grid function
         #   corresponding to fespace. Initialize x with initial guess of zero,
