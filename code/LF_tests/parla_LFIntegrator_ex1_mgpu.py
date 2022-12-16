@@ -469,6 +469,9 @@ def run(order=1, static_cond=False,
             # Barrier for the task space associated with the loop over blocks
             await lfts
 
+            print("Before the reduction task...\n")
+            print("global_element_blocks_pa =", global_element_blocks_pa, "\n")
+
             # Note: Could try using dependencies=ts[:,:], which should unpack object into a list
             # Better to use the explicit dependencies to be verbose
             @spawn(taskid=lfts[trial_idx,num_blocks], placement=gpu[0], 
@@ -476,7 +479,16 @@ def run(order=1, static_cond=False,
                    dependencies=[lfts[trial_idx,0:num_blocks]])
             def reduction_task():
 
-                global_element_blocks_pa[0,:].array = cp.sum(global_element_blocks_pa.array, axis=0)
+                print("Inside the reduction task...\n")
+                print("global_element_blocks_pa =", global_element_blocks_pa, "\n")
+
+                global_element_blocks_pa[0,:] = cp.sum(global_element_blocks_pa.array, axis=0)
+
+                print("global_element_blocks_pa[0] =", global_element_blocks_pa[0], "\n")
+                print("global_element_blocks_pa[0,:] =", global_element_blocks_pa[0,:], "\n")
+                print("global_element_blocks_pa[0,:].array =", global_element_blocks_pa[0,:].array, "\n")
+                print("global_element_blocks_pa[0][:] =", global_element_blocks_pa[0][:], "\n")
+                print("global_element_blocks_pa[0].array =", global_element_blocks_pa[0].array, "\n")
 
             await lfts
 
@@ -509,7 +521,7 @@ def run(order=1, static_cond=False,
         # The 'FormLinearSystem' method, which performs additional manipulations
         # that simplify the RHS for the resulting linear system
         my_b = mfem.LinearForm(fespace)
-        my_b.Assign(global_element_blocks_pa[0,:].array)
+        my_b.Assign(global_element_blocks_pa[0,:])
         #my_b.Assign(reduction_result_pa.array) # Fails because can't assign with type None
 
         # 7. Define the solution vector x as a finite element grid function
