@@ -19,8 +19,8 @@
 #SBATCH -e /scratch1/09047/was2489/convert_data.e%j      # Name of stderr error file
 #SBATCH -p small           # Queue (partition) name
 #SBATCH -N 1               # Total # of nodes (must be 1 for serial)
-#SBATCH -n 56              # Total # of cores
-#SBATCH -t 00:45:00        # Run time (hh:mm:ss)
+#SBATCH --ntasks-per-node 1             # Total # of MPI tasks per node
+#SBATCH -t 00:60:00        # Run time (hh:mm:ss)
 #SBATCH --mail-type=all    # Send email at begin and end of job
 #SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
 #SBATCH --mail-user=william.sands@austin.utexas.edu
@@ -36,9 +36,17 @@ cd ${WORK}/Projects/pymfem-parla-integration/code/graph_construction
 conda activate PyMFEM_env
 
 # Specify the list of mesh files that are to be used
-# Most meshes take ~ 1 hr to process, but the torch meshes may take a bit longer
-#meshfile_list="star.mesh toroid-wedge.mesh toroid-hex.mesh beam-hex.mesh cold-flow-sponge-tao4-r2.msh cold-flow-spongezone3.c1.msh"
-meshfile_list="star.mesh"
+# Note the use of spaces at the end of the string
+
+# Basic meshes supplied with the MFEM library
+meshfile_list="mobius-strip.mesh klein-bottle.mesh toroid-wedge.mesh toroid-hex.mesh "
+
+# 3-D meshes for the ICP torch (tetrahedral and hexahedral meshes)
+#meshfile_list+="cold-flow-sponge-tao4-r2.msh cold-flow-spongezone3.c1.msh "
+
+# Periodic twist mesh from MFEM miniapps
+# Uses third-order hexahedral elements (s3 and s6 denote # of twists)
+#meshfile_list+="twist-hex-o3-s3-r4-p.mesh twist-hex-o3-s6-r4-p.mesh "
 
 # Specify the order of the angular quadrature used
 # This provides a collection of directions that provide an orientation to the traversal
@@ -55,6 +63,7 @@ executable=mm2ecl
 
 for file in $meshfile_list  
 do
+
     # Get the name of the output directory to be converted
     # Note that this is not specified relative to the root, but this
     # is done inside the processing script
@@ -62,9 +71,6 @@ do
 
     # Convert the formatting for the graph data
     python convert_npz_to_egr.py -src $src_dir -exe $executable -root $root_dir
-
-    # Clean up the source directory to save some space
-    #rm -r $src_dir
 
 done
 

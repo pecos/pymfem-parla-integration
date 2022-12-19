@@ -68,7 +68,7 @@ def check_graphs_for_sccs(src_dir):
 
         print("Graph associated with file: %s"%f)
         print("Total number of SCCs found: %d"%len(scc_list))
-        print("Number of non-trivial SCCs found: %d"%len(nontrivial_scc_list))
+        print("Number of non-trivial SCCs found: %d \n"%len(nontrivial_scc_list))
 
     return None
 
