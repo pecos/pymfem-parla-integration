@@ -1,0 +1,47 @@
+#!/bin/bash
+#----------------------------------------------------
+# Last revised: 28 December 2022
+#
+# Notes: This particular script builds the GPU version of
+# PyMFEM, i.e., provides the CUDA support. 
+#
+# Apparently some features of PyMFEM are supported on versions of MFEM >= 4.5
+#
+# Before running the script, make sure that the we are on the branch
+# of PyMFEM named "mfem_45_dev", since these features are not yet in main.
+#
+#----------------------------------------------------
+
+#SBATCH -J pymfem_gpu          # Job name
+#SBATCH -o /scratch1/09047/was2489/pymfem_gpu.o%j      # Name of stdout output file (scratch user space)
+#SBATCH -e /scratch1/09047/was2489/pymfem_gpu.e%j      # Name of stderr error file (scratch user space)
+#SBATCH -p rtx           # Queue (partition) name
+#SBATCH -N 1               # Total # of nodes (must be 1 for serial)
+#SBATCH --ntasks-per-node 1             # Total # of MPI tasks per node
+#SBATCH -t 00:30:00        # Run time (hh:mm:ss)
+#SBATCH --mail-type=all    # Send email at begin and end of job
+#SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
+#SBATCH --mail-user=william.sands@austin.utexas.edu
+
+# To use the conda environment and modules therein, we
+# need to source the conda.sh file located in the user home space 
+source ${HOME}/miniconda3/etc/profile.d/conda.sh
+
+# Go to the directory of the project
+cd ${WORK}/Projects/pymfem-parla-integration/code/PyMFEM
+
+# Activate the Python environment
+conda activate PyMFEM_env
+
+# Load the modules for the build
+# Note that we assume the cuda 10.1 and cudatoolkit 10.1.243
+# modules are already loaded
+module load gcc/8.3.0
+
+# Clean the pre-existing build of PyMFEM before executing
+python setup.py clean --all
+
+# Now install the library with GCC as the specified compiler
+python setup.py install --with-cuda --CC=gcc --CXX=gcc
+
+printf "\nFinished with the build!\n"

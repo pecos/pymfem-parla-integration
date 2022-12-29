@@ -5,7 +5,7 @@
 #
 #   *** Parallel Job in Small Queue***
 # 
-# Last revised: 14 December 2022
+# Last revised: 28 December 2022
 #
 # Notes: This particular script launches a python
 # script that benchmarks MFEM's linear form performance
@@ -41,6 +41,6 @@ num_proc_list="1 2 4 8 16 32 56"
 
 for num_proc in $num_proc_list  
 do
-    echo "Working on the case with $num_proc MPI processes"
+    printf "Working on the case with $num_proc MPI processes"
     mpirun -np $num_proc python pymfem_mpi_ex1_benchmark.py -trials $num_trials
 done

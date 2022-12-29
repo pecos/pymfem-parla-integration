@@ -5,7 +5,7 @@
 #
 #   *** Parallel Job in Small Queue***
 # 
-# Last revised: 14 December 2022
+# Last revised: 18 December 2022
 #
 # Notes: This particular script launches a python
 # script that demonstrates the integration of Parla
@@ -18,7 +18,7 @@
 #SBATCH -e /scratch1/09047/was2489/LF_cpu.e%j      # Name of stderr error file (scratch user space)
 #SBATCH -p small           # Queue (partition) name
 #SBATCH -N 1               # Total # of nodes (must be 1 for serial)
-#SBATCH -n 56              # Total # of cores
+#SBATCH --ntasks-per-node 1              # Total # of MPI tasks per node
 #SBATCH -t 02:00:00        # Run time (hh:mm:ss)
 #SBATCH --mail-type=all    # Send email at begin and end of job
 #SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
@@ -41,6 +41,6 @@ num_blocks_list="1 2 4 8 16 32 56"
 
 for num_blocks in $num_blocks_list  
 do
-    echo "Working on the case with $num_blocks element blocks"
+    printf "Working on the case with $num_blocks element blocks"
     python parla_LFIntegrator_ex1_cpu.py -trials $num_trials -blocks $num_blocks  
 done

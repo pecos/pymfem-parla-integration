@@ -1,3 +1,9 @@
+"""
+This script tests the evaluation of a multi-device reduction using
+PArrays. The reduction involves a multi-dimensional array and sums
+across the device memory, storing the final result in a CuPy array.
+"""
+
 import argparse
 import os
 from os.path import expanduser, join
@@ -81,7 +87,7 @@ def main():
         # the correct answer is (blocks - 1)*(blocks)/2
         solution = (blocks - 1)*(blocks)/2
 
-        print("Solution for this configuration:", solution, "\n")
+        print("Solution for this configuration:", solution)
 
         # Create the task space for Parla
         sts = TaskSpace("SetupTaskSpace")
@@ -92,6 +98,8 @@ def main():
 
         for trial_idx in range(trials):
 
+            print("Trial %d"%(trial_idx+1))
+
             # Setup the array
             for i in range(blocks):
 
@@ -101,25 +109,26 @@ def main():
                 # Set the values in the PArray to be the block idx
                 @spawn(taskid=sts[trial_idx,i], placement=gpu[dev_idx], output=[A_pa[i]])
                 def init_task():
-
                     A_pa[i,:] = i       
-
                 await sts
 
             # Now print the value of the PArray to the console for inspection
             print("Initialization is complete. Printing the output now...\n")
             print("A_pa =", A_pa, "\n")
-            print("Preparing to start the reduction task.\n")
+            print("Preparing to start the reduction task.")
 
             parla_start = time.perf_counter()
 
+            # FIX-ME: Code incorrectly handles the transfer between devices.
+            #
             # Perform the reduction of the PArray on the device
-            @spawn(taskid=rts[trial_idx], placement=gpu[0], input=[A_pa], dependencies=[sts[trial_idx,0:blocks]])
+            input_data = [A_pa[0:]] # If we use [A_pa], then an exception is flagged b/c the host is invalid
+            depends = [sts[trial_idx,0:blocks]]
+            @spawn(taskid=rts[trial_idx], placement=gpu[0], input=input_data, dependencies=depends)
             def reduction_task():
-
-                # Sum across the blocks
-                reduction_result[:] = cp.sum(A_pa.array, axis=0)
-
+                print("Inside the reduction task on device 0. Printing the input now...\n")
+                print("A_pa[0:] =", A_pa[0:], "\n")
+                reduction_result[:] = cp.sum(A_pa[0:], axis=0)
             await rts
 
             parla_end = time.perf_counter()
@@ -130,8 +139,8 @@ def main():
         print("Parla times (min, max, avg) [s] ", parla_times.min(),",",
         parla_times.max(),",", parla_times.mean(), "\n",flush=True)
 
-        # Check for correctness
-        print("Is the solution correct?", cp.all(reduction_result == solution), "\n")
+        # Check for correctness on the host
+        print("Is the solution correct?", np.all(reduction_result == solution), "\n")
 
 
 if __name__ == "__main__":

@@ -16,10 +16,10 @@
 #SBATCH -J LF_gpu          # Job name
 #SBATCH -o /scratch1/09047/was2489/LF_gpu.o%j      # Name of stdout output file (scratch user space)
 #SBATCH -e /scratch1/09047/was2489/LF_gpu.e%j      # Name of stderr error file (scratch user space)
-#SBATCH -p rtx-dev           # Queue (partition) name
+#SBATCH -p rtx           # Queue (partition) name
 #SBATCH -N 1               # Total # of nodes (must be 1 for serial)
-#SBATCH -n 16              # Total # of cores
-#SBATCH -t 00:02:00        # Run time (hh:mm:ss)
+#SBATCH --ntasks-per-node 1             # Total # of MPI tasks per node
+#SBATCH -t 00:30:00        # Run time (hh:mm:ss)
 #SBATCH --mail-type=all    # Send email at begin and end of job
 #SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
 #SBATCH --mail-user=william.sands@austin.utexas.edu
@@ -35,10 +35,10 @@ cd ${WORK}/Projects/pymfem-parla-integration/code/LF_tests
 conda activate PyMFEM_env
 
 # Number of trials for each experiment
-num_trials=1
+num_trials=2
 
-# We use 1 block per GPU
-num_gpus_list="2"
+# We use 1 block per GPU when launching
+num_gpus_list="1 2 3 4"
 
 for num_gpus in $num_gpus_list  
 do

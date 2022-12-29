@@ -1,4 +1,4 @@
-'''
+"""
    MFEM example 1 (converted from ex1.cpp)
 
    Here we demonstrate the integration of Parla
@@ -33,7 +33,8 @@
                  simple finite element discretization of the Laplace problem
                  -Delta u = 1 with homogeneous Dirichlet boundary conditions.
 
-'''
+    Note: To run on a GPU device with CUDA, specify: --device cuda
+"""
 import argparse
 import os
 from os.path import expanduser, join
@@ -61,9 +62,9 @@ parser.add_argument("-d", "--device",
                     default="cpu", type=str,
                     help="Device configuration string, see Device::Configure().")
 parser.add_argument('-ngpus', type=int,
-                    default=1, help="Number of gpus to use.")
+                    default=1, help="Number of gpus to use for Parla.")
 parser.add_argument('-blocks', type=int, 
-                    default=1, help="Number of element blocks/partitions.")
+                    default=1, help="Number of element blocks/partitions for Parla.")
 parser.add_argument('-trials', type=int,
                     default=1, help="Number of repititions for timing regions of code.")
 
@@ -193,8 +194,8 @@ def inner_quad_kernel(block_element_array, l2g_map,
 
 
 def run(order=1, static_cond=False,
-        meshfile='', visualization=False,
-        device='cpu', ngpus=ngpus, pa=False):
+        meshfile="", visualization=False,
+        device="cpu", ngpus=ngpus, pa=False):
     """
     run ex1
     """
@@ -212,7 +213,7 @@ def run(order=1, static_cond=False,
     #      largest number that gives a final mesh with no more than 50,000
     #      elements.
     #ref_levels = int(np.floor(np.log(50000./mesh.GetNE())/np.log(2.)/dim))
-    #ref_levels = int(np.floor(np.log(2000000./mesh.GetNE())/np.log(2.)/dim))
+    #ref_levels = int(np.floor(np.log(4000000./mesh.GetNE())/np.log(2.)/dim))
     ref_levels = 6
 
     print("ref_levels =", ref_levels, "\n")
@@ -253,15 +254,18 @@ def run(order=1, static_cond=False,
     # 6. Set up the linear form b(.) which corresponds to the right-hand side of
     #   the FEM linear system, which in this case is (1,phi_i) where phi_i are
     #   the basis functions in the finite element fespace.
-    #pymfem_times = np.zeros([num_trials]) # Store the times for statistics 
-    pymfem_times = np.zeros([1]) # Hack for now until device is added
+    pymfem_times = np.zeros([num_trials]) # Store the times for statistics 
 
     b = mfem.LinearForm(fespace)
     one = mfem.ConstantCoefficient(1.0)
     b.AddDomainIntegrator(mfem.DomainLFIntegrator(one))
 
-    #for trial_idx in range(num_trials):
-    for trial_idx in range(1):
+    # When running on the GPU, we should use MFEM's FastAssembly method
+    print("Using MFEM's FastAssembly method.")
+    assert b.SupportsDevice(), "Error: Linear form device assembly not supported."
+    b.UseFastAssembly(True)
+
+    for trial_idx in range(num_trials):
 
         # Reset the value of the linear form
         # This is needed for correctness
@@ -274,12 +278,13 @@ def run(order=1, static_cond=False,
 
         pymfem_times[trial_idx] = pymfem_end - pymfem_start
 
+    #pymfem_times[1:] = pymfem_times[0]
+
     #-----------------------------------------------------------------------------
     # Version based on Parla
     #-----------------------------------------------------------------------------
 
     # Pre-processing step
-
     precompute_start = time.perf_counter()
 
     # Get the quad information and store basis functions at the element quad pts
@@ -468,29 +473,13 @@ def run(order=1, static_cond=False,
             # Barrier for the task space associated with the loop over blocks
             await lfts
 
-            #print("Before the reduction task...\n")
-            #print("global_element_blocks_pa =", global_element_blocks_pa, "\n")
-
             # Note: Could try using dependencies=ts[:,:], which should unpack object into a list
             # Better to use the explicit dependencies to be verbose
             @spawn(taskid=lfts[trial_idx,num_blocks], placement=gpu[0], 
                    inout=[global_element_blocks_pa], 
                    dependencies=[lfts[trial_idx,0:num_blocks]])
             def reduction_task():
-
-                #print("Inside the reduction task...\n")
-                #print("global_element_blocks_pa =", global_element_blocks_pa, "\n")
-
-                #global_element_blocks_pa[0].array = cp.sum(global_element_blocks_pa.array, axis=0)
-
-                #print("global_element_blocks_pa[0] =", global_element_blocks_pa[0], "\n")
-                #print("global_element_blocks_pa[0,:] =", global_element_blocks_pa[0,:], "\n")
-                #print("global_element_blocks_pa[0,:].array =", global_element_blocks_pa[0,:].array, "\n")
-                #print("global_element_blocks_pa[0][:] =", global_element_blocks_pa[0][:], "\n")
-                #print("global_element_blocks_pa[0].array =", global_element_blocks_pa[0].array, "\n")
-
                 reduction_result_cp[:] = cp.sum(global_element_blocks_pa.array, axis=0)
-
             await lfts
 
             parla_end = time.perf_counter()
@@ -498,13 +487,10 @@ def run(order=1, static_cond=False,
 
         # End of the trial loop
 
-        #print("PyMFEM times (min, max, avg) [s]: ", pymfem_times.min(),",", 
-        #                                            pymfem_times.max(),",", 
-        #                                            pymfem_times.mean(),
-        #                                            "\n",flush=True)
-
-        # Hack until we have the MFEM device code working
-        print("\nPyMFEM time (CPU) [s]: ", pymfem_times[0], "\n",flush=True)
+        print("PyMFEM times (min, max, avg) [s]: ", pymfem_times.min(),",", 
+                                                    pymfem_times.max(),",", 
+                                                    pymfem_times.mean(),
+                                                    "\n",flush=True)
 
         print("Parla times (min, max, avg) [s] ", parla_times.min(),",",
                                                   parla_times.max(),",",
@@ -519,8 +505,6 @@ def run(order=1, static_cond=False,
         # The 'FormLinearSystem' method, which performs additional manipulations
         # that simplify the RHS for the resulting linear system
         my_b = mfem.LinearForm(fespace)
-        #my_b.Assign(global_element_blocks_pa[0].array)
-        #my_b.Assign(reduction_result_pa.array) # Fails because can't assign with type None
         my_b.Assign( cp.asnumpy(reduction_result_cp) )
 
         # 7. Define the solution vector x as a finite element grid function
@@ -572,34 +556,6 @@ def run(order=1, static_cond=False,
         print("Relative error in the rhs (1-norm):", rel_err_1)
         print("Relative error in the rhs (2-norm):", rel_err_2)
         print("Relative error in the rhs (inf-norm):", rel_err_inf, "\n")
-
-
-    # 10. Solve
-    #if pa:
-    #    if mfem.UsesTensorBasis(fespace):
-    #        M = mfem.OperatorJacobiSmoother(a, ess_tdof_list)
-    #        mfem.PCG(A, M, B, X, 1, 4000, 1e-12, 0.0)
-    #    else:
-    #        mfem.CG(A, B, X, 1, 400, 1e-12, 0.0)
-    #else:
-        #AA = mfem.OperatorHandle2SparseMatrix(A)
-    #    AA = A.AsSparseMatrix()
-    #    M = mfem.GSSmoother(AA)
-    #    mfem.PCG(A, M, B, X, 1, 200, 1e-12, 0.0)
-
-    # 11. Recover the solution as a finite element grid function.
-    #a.RecoverFEMSolution(X, b, x)
-
-    # 12. Save the refined mesh and the solution. This output can be viewed later
-    #     using GLVis: "glvis -m refined.mesh -g sol.gf".
-    #mesh.Print('refined.mesh', 8)
-    #x.Save('sol.gf', 8)
-
-    # 13. Send the solution by socket to a GLVis server.
-    #if (visualization):
-    #    sol_sock = mfem.socketstream("localhost", 19916)
-    #    sol_sock.precision(8)
-    #    sol_sock.send_solution(mesh, x)
 
 
 if __name__ == "__main__":

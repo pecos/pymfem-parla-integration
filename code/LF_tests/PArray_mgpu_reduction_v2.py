@@ -88,14 +88,17 @@ def main():
 
         print("Solution for this configuration:", solution, "\n")
 
-        # Create the task space for Parla
+        # Create the task spaces for Parla
         sts = TaskSpace("SetupTaskSpace")
         rts = TaskSpace("ReductionTaskSpace")
+        dts = TaskSpace("DataTaskSpace")
 
         # Store the times for statistics
         parla_times = np.zeros([trials]) 
 
         for trial_idx in range(trials):
+
+            print("Trial: %d"%trial_idx) 
 
             # Setup the array
             for i in range(blocks):
@@ -106,9 +109,7 @@ def main():
                 # Set the values in the PArray to be the block idx
                 @spawn(taskid=sts[trial_idx,i], placement=gpu[dev_idx], output=[A_pa[i]])
                 def init_task():
-
-                    A_pa[i,:] = i       
-
+                    A_pa[i,:] = i
                 await sts
 
             # Now print the value of the PArray to the console for inspection
@@ -118,14 +119,18 @@ def main():
 
             parla_start = time.perf_counter()
 
+            # FIX-ME: PArray is not handling the distribution between devices correctly
+            # We need to specify that we don't want the host data since it will be invalid
+            # when trials > 1. Therefore, the PArray will need to skip the host portion
+            #
             # Perform the reduction of the PArray on the device
-            @spawn(taskid=rts[trial_idx], placement=gpu[0], input=[A_pa], 
-                   output=[reduction_result_pa], dependencies=[sts[trial_idx,0:blocks]])
+            @spawn(taskid=rts[trial_idx], placement=gpu[0], input=[A_pa[0:]], 
+                   output=[reduction_result_pa[0:]], dependencies=[sts[trial_idx,0:blocks]])
             def reduction_task():
-
                 # We can use the update() method here since the result array is write-only
+                print("Inside the reduction task on device 0. Printing the input now...\n")
+                print("A_pa =", A_pa, "\n")
                 reduction_result_pa.update( cp.sum(A_pa.array, axis=0) )
-
             await rts
 
             parla_end = time.perf_counter()
@@ -133,14 +138,24 @@ def main():
 
         # End of the trial loop
 
+        print("A_pa =", A_pa, "\n")
+        print("reduction_result_pa =", reduction_result_pa, "\n")
+
+        # Need to move the data on the device back to the host
+        # The host data was marked as invalid
+        @spawn(taskid=dts[0], placement=cpu, input=[reduction_result_pa])
+        def move_to_host():
+            print("Moving data back to the host side.")
+        await dts
+
         print("type( reduction_result_pa.array ) =", type( reduction_result_pa.array ) )
         print("reduction_result_pa.array  =", reduction_result_pa.array )
 
         print("Parla times (min, max, avg) [s] ", parla_times.min(),",",
         parla_times.max(),",", parla_times.mean(), "\n",flush=True)
 
-        # Check for correctness
-        print("Is the solution correct?", cp.all(reduction_result_pa.array == solution), "\n")
+        # Check for correctness on the host
+        print("Is the solution correct?", np.all(reduction_result_pa.array == solution), "\n")
 
 
 if __name__ == "__main__":
