@@ -57,8 +57,6 @@ sys.path.append(parla_dir)
 
 import numpy as np
 import cupy as cp
-import numba as nb
-from numba import cuda
 import time
 
 # Parla modules and decorators
@@ -73,14 +71,12 @@ def main():
     @spawn(placement=cpu)
     async def main_task():
 
-        # Create a 2-D array on the host then
-        # wrap it with a PArray
-        A = np.zeros([blocks,N], dtype=np.int64)
-        A_pa = parray.asarray(A)
+        # Create the task space for Parla
+        sts = TaskSpace("SetupTaskSpace")
+        rts = TaskSpace("ReductionTaskSpace")
 
-        # Create the array that will hold the reduction
-        # This lives on device 0
-        reduction_result = cp.zeros([N], dtype=cp.int64)
+        # Store the times for statistics
+        parla_times = np.zeros([trials]) 
 
         # Each row of the array A will be the row_id
         # When we sum down the rows for the reduction
@@ -89,46 +85,43 @@ def main():
 
         print("Solution for this configuration:", solution)
 
-        # Create the task space for Parla
-        sts = TaskSpace("SetupTaskSpace")
-        rts = TaskSpace("ReductionTaskSpace")
-
-        # Store the times for statistics
-        parla_times = np.zeros([trials]) 
-
         for trial_idx in range(trials):
 
             print("Trial %d"%(trial_idx+1))
+            
+            # Create a 2-D array on the host then
+            # wrap it with a PArray
+            A = np.zeros([blocks,N], dtype=np.int64)
+            A_pa = parray.asarray(A)
+
+            # Create the array that will hold the reduction
+            # This lives on device 0
+            reduction_result_cp = cp.zeros([N], dtype=cp.int64)
 
             # Setup the array
             for i in range(blocks):
 
                 # Map the block to a specific device
                 dev_idx = i % ngpus
-                
+
                 # Set the values in the PArray to be the block idx
                 @spawn(taskid=sts[trial_idx,i], placement=gpu[dev_idx], output=[A_pa[i]])
                 def init_task():
-                    A_pa[i,:] = i       
+                    A_pa[i,:] = i
+                    print("Inside the init task on device %d. Printing the initialized data now...\n"%dev_idx)
+                    print("A_pa[i,:] =", A_pa[i,:], "\n")
                 await sts
 
-            # Now print the value of the PArray to the console for inspection
-            print("Initialization is complete. Printing the output now...\n")
-            print("A_pa =", A_pa, "\n")
             print("Preparing to start the reduction task.")
 
             parla_start = time.perf_counter()
-
-            # FIX-ME: Code incorrectly handles the transfer between devices.
-            #
-            # Perform the reduction of the PArray on the device
-            input_data = [A_pa[0:]] # If we use [A_pa], then an exception is flagged b/c the host is invalid
-            depends = [sts[trial_idx,0:blocks]]
-            @spawn(taskid=rts[trial_idx], placement=gpu[0], input=input_data, dependencies=depends)
+            
+            # Perform the reduction of the PArray on the device(s)
+            @spawn(taskid=rts[trial_idx], placement=gpu[0], input=[A_pa], dependencies=[sts[trial_idx,0:blocks]])
             def reduction_task():
-                print("Inside the reduction task on device 0. Printing the input now...\n")
-                print("A_pa[0:] =", A_pa[0:], "\n")
-                reduction_result[:] = cp.sum(A_pa[0:], axis=0)
+                print("Inside the reduction task on device 0. Printing the input data now...\n")
+                print("A_pa.array =", A_pa.array, "\n")
+                reduction_result_cp[:] = cp.sum(A_pa.array, axis=0)
             await rts
 
             parla_end = time.perf_counter()
@@ -140,8 +133,8 @@ def main():
         parla_times.max(),",", parla_times.mean(), "\n",flush=True)
 
         # Check for correctness on the host
-        print("Is the solution correct?", np.all(reduction_result == solution), "\n")
-
+        # We need to "get" a host copy of the device array for the comparison
+        print("Is the result correct?", np.all(reduction_result_cp.get() == solution), "\n")
 
 if __name__ == "__main__":
 

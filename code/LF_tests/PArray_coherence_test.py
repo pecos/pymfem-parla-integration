@@ -1,7 +1,7 @@
 """
-This script tests the evaluation of a multi-device reduction using
-PArrays. The reduction involves a multi-dimensional array and sums
-across the device memory, storing the final result in a PArray.
+This script tests the coherencen of PArray in the context of a multi-device 
+reduction using. The reduction involves a multi-dimensional array and sums
+across the device memory, storing the final result in a CuPy array.
 """
 
 import argparse
@@ -57,8 +57,6 @@ sys.path.append(parla_dir)
 
 import numpy as np
 import cupy as cp
-import numba as nb
-from numba import cuda
 import time
 
 # Parla modules and decorators
@@ -73,41 +71,47 @@ def main():
     @spawn(placement=cpu)
     async def main_task():
 
-        # Create the task spaces for Parla
+        # Create the task space for Parla
         sts = TaskSpace("SetupTaskSpace")
         rts = TaskSpace("ReductionTaskSpace")
-        dts = TaskSpace("DataTaskSpace")
+
+        # Store the times for statistics
+        parla_times = np.zeros([trials]) 
 
         # Each row of the array A will be the row_id
         # When we sum down the rows for the reduction
         # the correct answer is (blocks - 1)*(blocks)/2
         solution = (blocks - 1)*(blocks)/2
-        print("Solution for this configuration:", solution, "\n")
 
-        # Store the times for statistics
-        parla_times = np.zeros([trials]) 
+        print("Solution for this configuration:", solution)
+
+        # Note: We initialize PArray here so that it
+        # is reused in the trial loop. This helps
+        # to access the coherence of the arrays wrapped by
+        # PArray to determine if we have to "clear" its contents
+        #
+        # Create a 2-D array on the host then
+        # wrap it with a PArray
+        A = np.zeros([blocks,N], dtype=np.int64)
+        A_pa = parray.asarray(A)
+
+        # Create the array that will hold the reduction
+        # This lives on device 0
+        reduction_result_cp = cp.zeros([N], dtype=cp.int64)
 
         for trial_idx in range(trials):
 
-            print("Trial: %d"%trial_idx) 
-
-            # Create a 2-D array on the host then
-            # wrap it with a PArray
-            A = np.zeros([blocks,N], dtype=np.int64)
-            A_pa = parray.asarray(A)
-
-            # Create the PArray that will hold the reduction
-            reduction_result_pa = parray.asarray( np.zeros([N]) )
+            print("Trial %d"%(trial_idx+1))
 
             # Setup the array
             for i in range(blocks):
 
                 # Map the block to a specific device
                 dev_idx = i % ngpus
-                
+
                 # Set the values in the PArray to be the block idx
                 @spawn(taskid=sts[trial_idx,i], placement=gpu[dev_idx], output=[A_pa[i]])
-                def init_task(): 
+                def init_task():
                     A_pa[i,:] = i
                     print("Inside the init task on device %d. Printing the initialized data now...\n"%dev_idx)
                     print("A_pa[i,:] =", A_pa[i,:], "\n")
@@ -116,16 +120,13 @@ def main():
             print("Preparing to start the reduction task.")
 
             parla_start = time.perf_counter()
-
+            
             # Perform the reduction of the PArray on the device(s)
-            @spawn(taskid=rts[trial_idx], placement=gpu[0], input=[A_pa], 
-                   output=[reduction_result_pa], dependencies=[sts[trial_idx,0:blocks]])
+            @spawn(taskid=rts[trial_idx], placement=gpu[0], input=[A_pa], dependencies=[sts[trial_idx,0:blocks]])
             def reduction_task():
-                # We can use the update() method here since the result array is write-only
-                # Slicing is also a valid option as well.
-                print("Inside the reduction task on device 0. Printing the input now...\n")
-                print("A_pa =", A_pa, "\n")
-                reduction_result_pa.update( cp.sum(A_pa.array, axis=0) )
+                print("Inside the reduction task on device 0. Printing the input data now...\n")
+                print("A_pa.array =", A_pa.array, "\n")
+                reduction_result_cp[:] = cp.sum(A_pa.array, axis=0)
             await rts
 
             parla_end = time.perf_counter()
@@ -136,15 +137,9 @@ def main():
         print("Parla times (min, max, avg) [s] ", parla_times.min(),",",
         parla_times.max(),",", parla_times.mean(), "\n",flush=True)
 
-        # Need to move the data on the device back to the host to check the result
-        # Updates on the device(s) invalidate the host data
-        @spawn(taskid=dts[0], placement=cpu, input=[reduction_result_pa])
-        def check_result():
-            print("A_pa =", A_pa, "\n")
-            print("reduction_result_pa.array  =", reduction_result_pa.array)
-            print("Is the result correct?", np.all(reduction_result_pa.array == solution), "\n")
-        await dts
-
+        # Check for correctness on the host
+        # We need to "get" a host copy of the device array for the comparison
+        print("Is the result correct?", np.all(reduction_result_cp.get() == solution), "\n")
 
 if __name__ == "__main__":
 

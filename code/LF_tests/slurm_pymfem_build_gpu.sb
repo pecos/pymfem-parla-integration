@@ -1,6 +1,6 @@
 #!/bin/bash
 #----------------------------------------------------
-# Last revised: 28 December 2022
+# Last revised: 30 December 2022
 #
 # Notes: This particular script builds the GPU version of
 # PyMFEM, i.e., provides the CUDA support. 
@@ -30,13 +30,15 @@ source ${HOME}/miniconda3/etc/profile.d/conda.sh
 # Go to the directory of the project
 cd ${WORK}/Projects/pymfem-parla-integration/code/PyMFEM
 
-# Activate the Python environment
+# Activate the Python environment with the Parla dependencies as well as swig/4.0.0 for PyMFEM
 conda activate PyMFEM_env
 
-# Load the modules for the build
-# Note that we assume the cuda 10.1 and cudatoolkit 10.1.243
-# modules are already loaded
+# Load the modules required for the build
+# We don't need to load swig/4.0.0 since this is installed with the Python environment
+# Also, loading swig/4.0.0 requires loading gcc/9.1 which is not compatible with the cuda installation
+module load cmake/3.24.2
 module load gcc/8.3.0
+module load cuda/10.1
 
 # Clean the pre-existing build of PyMFEM before executing
 python setup.py clean --all
