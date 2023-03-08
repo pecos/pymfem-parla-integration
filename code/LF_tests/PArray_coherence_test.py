@@ -1,7 +1,7 @@
 """
-This script tests the coherencen of PArray in the context of a multi-device 
-reduction using. The reduction involves a multi-dimensional array and sums
-across the device memory, storing the final result in a CuPy array.
+This script tests the coherence of PArray in the context of a multi-device 
+reduction using Parla. The reduction involves a multi-dimensional array that 
+is gathered to a single device, summed, then stored in a CuPy array.
 """
 
 import argparse
