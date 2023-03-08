@@ -22,7 +22,7 @@
 #SBATCH -t 00:30:00        # Run time (hh:mm:ss)
 #SBATCH --mail-type=all    # Send email at begin and end of job
 #SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
-#SBATCH --mail-user=william.sands@austin.utexas.edu
+##SBATCH --mail-user=william.sands@austin.utexas.edu
 
 # To use the conda environment and modules therein, we
 # need to source the conda.sh file located in the user home space 
@@ -35,12 +35,13 @@ cd ${WORK}/Projects/pymfem-parla-integration/code/LF_tests
 conda activate PyMFEM_env
 
 # Number of trials for each experiment
-num_trials=2
+num_trials=1
 
-# We use 1 block per GPU when launching
+# Number of GPUs to use in each experiment
 num_gpus_list="1 2 3 4"
 
 for num_gpus in $num_gpus_list  
 do
-    python parla_LFIntegrator_ex1_mgpu.py -ngpus $num_gpus -blocks $num_gpus -trials $num_trials
+    num_blocks=$num_gpus
+    python parla_LFIntegrator_ex1_mgpu.py -ngpus $num_gpus -blocks $num_blocks -trials $num_trials
 done

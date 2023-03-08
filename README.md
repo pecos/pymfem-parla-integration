@@ -1,8 +1,11 @@
 # pymfem-parla-integration
 This repo holds the code developed for the project involving the integration of Parla with MFEM.
 
+
 # Remarks on building PyMFEM
-There are several complications involving the build for PyMFEM. This project is under continuous development, so there is limited documentation. Additionally, building PyMFEM requires building the various dependencies for MFEM, which, at a minimum, requires Metis and Hypre. Other libraries such as libCEED, GLVis, and GSLib require additional commands. In order to build PyMFEM, users will need to have SWIG installed. We used swig/4.0.0 on Frontera for our experiments.
+There are several complications involving the build for PyMFEM. This project is under continuous development, so there is limited documentation. Additionally, building PyMFEM requires building the various dependencies for MFEM, which, at a minimum, requires Metis and Hypre. Other libraries such as libCEED, GLVis, and GSLib require additional commands. In order to build PyMFEM, users will need to have SWIG installed. Additionally, we have found that the builds tend to be very sensitive to the versions of Numba's dependencies. To create a more stable build, we have created a yml file for the Python environment to isolate some of these problems. Users can create the environment with:
+
+`conda env create -f PyMFEM_env.yml`
 
 The parallel CPU build requires Metis, which (at the time of this writing) has undergone signficant changes and does not appear to function within MFEM. Instead, we recommend grabbing the tarball `Metis-5.1.0.tar.gz` in `mfem/tpls` and building with `cc=icc` and `shared=1`. Then, one needs to copy the `.so` file in the build directory to a new `lib` directory so that MFEM can see this.
 

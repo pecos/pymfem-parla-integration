@@ -22,8 +22,8 @@
 #SBATCH -e /scratch1/09047/was2489/generate_data.e%j      # Name of stderr error file
 #SBATCH -p small           # Queue (partition) name
 #SBATCH -N 1               # Total # of nodes (must be 1 for serial)
-#SBATCH --ntasks-per-node 1             # Total # of MPI tasks per node
-#SBATCH -t 00:60:00        # Run time (hh:mm:ss)
+#SBATCH -n 56              # Total # of cores
+#SBATCH -t 48:00:00        # Run time (hh:mm:ss)
 #SBATCH --mail-type=all    # Send email at begin and end of job
 #SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
 #SBATCH --mail-user=william.sands@austin.utexas.edu
@@ -41,37 +41,35 @@ conda activate PyMFEM_env
 # Specify the list of mesh files that are to be used
 
 # Basic meshes supplied with the MFEM library
-meshfile_list="mobius-strip.mesh klein-bottle.mesh toroid-wedge.mesh toroid-hex.mesh "
+#meshfile_list="mobius-strip.mesh klein-bottle.mesh toroid-wedge.mesh toroid-hex.mesh "
+#meshfile_list="toroid-hex.mesh "
 
 # Meshes for the ICP torch (tetrahedral and hexahedral meshes)
 #meshfile_list+="cold-flow-sponge-tao4-r2.msh cold-flow-spongezone3.c1.msh "
 
 # Periodic twist mesh from the MFEM miniapps
 # Uses third-order hexahedral elements (s3 and s6 denote # of twists)
-#meshfile_list+="twist-hex-o3-s3-r4-p.mesh twist-hex-o3-s6-r4-p.mesh "
+#meshfile_list="twist-hex-o3-s3-r4-p.mesh twist-hex-o3-s6-r4-p.mesh "
+meshfile_list="twist-hex-o3-s6-r4-p.mesh "
 
 # Specify the order of the angular quadrature used
 # This provides a collection of directions that provide an orientation to the traversal
 # Note that for an Mth order accuracy, we need 2M angles in 2-D and 2M^2 in 3-D, so
 # take care when setting this value
-quad_order=4
+quad_order=2
 
 # Specify the upper bound on the number of elements for any given mesh
-max_elements=10000
+max_elements=100000000
 
 # Specify the location of the root where data files will be stored
 root_dir=${SCRATCH}
-
-# Specify the file (executable) used to generate the ECL binary format
-# This is assumed to be in the CWD
-executable=mm2ecl
 
 for file in $meshfile_list  
 do
 
     printf "Meshfile: ${file}\n"
 
-    # First, for each mesh, generate all the directed graphs and store the output in Matrix-Market format
+    # First, for each mesh, generate all the directed graphs and store the output in npz format
     python build_graphs.py -meshfile $file -M $quad_order -max_size $max_elements -root $root_dir
 
 done

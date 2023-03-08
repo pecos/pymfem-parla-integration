@@ -365,12 +365,6 @@ def run(order=1, static_cond=False,
     # hold partial sums of this global array
     global_element_blocks_pa = parray.asarray( np.zeros([num_blocks, gdof]) )
 
-    # Device array to store the result of the reduction
-    reduction_result_cp = cp.zeros([gdof])
-
-    # This works as intended
-    #print("Initialization: reduction_result_pa.array =", reduction_result_pa.array)
-
     # Launch the dummy kernel on device 0
     with cp.cuda.Device(0):
 
@@ -405,6 +399,7 @@ def run(order=1, static_cond=False,
         # Create the task space(s) first
         init = TaskSpace("InitTaskSpace") # Handles the initialization process
         lfts = TaskSpace("LFTaskSpace") # Handles the linear form evaluation (blocking + reduction)
+        dts = TaskSpace("DataTaskSpace") # Handles data collection on the host at the end
 
         parla_times = np.zeros([num_trials]) # Store the times for statistics
 
@@ -420,12 +415,14 @@ def run(order=1, static_cond=False,
                 # However, we account for the case that number of blocks > ngpus
                 # When there is only one device, then these should map to device 0
                 device_idx = i % ngpus
-                inout_data = [global_element_blocks_pa[i]]
+                inout_data = [global_element_blocks_pa]
 
                 @spawn(taskid=init[trial_idx,i], placement=gpu[device_idx], inout=inout_data)
-                def reset_block():
-                    global_element_blocks_pa[i,:] = 0.0
-                await init[trial_idx,i]
+                async def reset_block():
+
+                    global_element_blocks_pa.array[i,:] = 0.0
+
+            await init
 
             parla_start = time.perf_counter()
 
@@ -452,7 +449,7 @@ def run(order=1, static_cond=False,
                     e_idx = s_idx + element_block_sizes[i]
 
                     # Extract the relevant arrays from the PArrays
-                    global_element_block = global_element_blocks_pa[i,:].array
+                    global_element_block = global_element_blocks_pa.array[i,:]
                     l2g_map = l2g_map_pa.array 
                     quad_wts = quad_wts_pa.array
                     quad_pts = quad_pts_pa.array
@@ -473,19 +470,28 @@ def run(order=1, static_cond=False,
             # Barrier for the task space associated with the loop over blocks
             await lfts
 
-            # Note: Could try using dependencies=ts[:,:], which should unpack object into a list
-            # Better to use the explicit dependencies to be verbose
             @spawn(taskid=lfts[trial_idx,num_blocks], placement=gpu[0], 
                    inout=[global_element_blocks_pa], 
                    dependencies=[lfts[trial_idx,0:num_blocks]])
             def reduction_task():
-                reduction_result_cp[:] = cp.sum(global_element_blocks_pa.array, axis=0)
+
+                # This line is valid
+                global_element_blocks_pa.array[0,:] = cp.sum(global_element_blocks_pa.array, axis=0)
+
             await lfts
 
             parla_end = time.perf_counter()
             parla_times[trial_idx] = parla_end - parla_start
 
         # End of the trial loop
+
+        # Move the PArray data back to the host for error measurements
+        @spawn(taskid=dts[0], placement=cpu, input=[global_element_blocks_pa])
+        def gather_data():
+
+            pass
+
+        await dts
 
         print("PyMFEM times (min, max, avg) [s]: ", pymfem_times.min(),",", 
                                                     pymfem_times.max(),",", 
@@ -497,6 +503,8 @@ def run(order=1, static_cond=False,
                                                   parla_times.mean(),
                                                   "\n",flush=True)
 
+        print("Checking for correctness...")
+
         #-----------------------------------------------------------------------------
         # End of the Parla test (the remainder checks for correctness)
         #-----------------------------------------------------------------------------
@@ -505,7 +513,7 @@ def run(order=1, static_cond=False,
         # The 'FormLinearSystem' method, which performs additional manipulations
         # that simplify the RHS for the resulting linear system
         my_b = mfem.LinearForm(fespace)
-        my_b.Assign( cp.asnumpy(reduction_result_cp) )
+        my_b.Assign(  global_element_blocks_pa.array[0,:] )
 
         # 7. Define the solution vector x as a finite element grid function
         #   corresponding to fespace. Initialize x with initial guess of zero,

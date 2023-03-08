@@ -23,7 +23,7 @@
 #SBATCH -e /scratch1/09047/was2489/sccs.e%j      # Name of stderr error file
 #SBATCH -p small           # Queue (partition) name
 #SBATCH -N 1               # Total # of nodes (must be 1 for serial)
-#SBATCH -n 56              # Total # of cores
+#SBATCH --ntasks-per-node 1             # Total # of MPI tasks per node
 #SBATCH -t 00:60:00        # Run time (hh:mm:ss)
 #SBATCH --mail-type=all    # Send email at begin and end of job
 #SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
@@ -42,7 +42,8 @@ conda activate PyMFEM_env
 # Specify the list of mesh files that are to be used
 
 # Basic meshes supplied with the MFEM library
-meshfile_list="mobius-strip.mesh klein-bottle.mesh toroid-wedge.mesh toroid-hex.mesh "
+#meshfile_list="mobius-strip.mesh klein-bottle.mesh toroid-wedge.mesh toroid-hex.mesh "
+meshfile_list="mobius-strip.mesh klein-bottle.mesh toroid-wedge.mesh "
 
 # Meshes for the ICP torch (tetrahedral and hexahedral meshes)
 #meshfile_list+="cold-flow-sponge-tao4-r2.msh cold-flow-spongezone3.c1.msh "

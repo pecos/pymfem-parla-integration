@@ -34,6 +34,12 @@ cd ${WORK}/Projects/pymfem-parla-integration/code/PyMFEM
 conda activate PyMFEM_env
 
 # Note that we assume the modules needed are already installed
+module purge
+module load cmake/3.24.2
+module load intel/19.1.1
+module load impi/19.0.9
+module load python3/3.7.0
+
 # Clean the pre-existing build of PyMFEM before executing
 python setup.py clean --all
 

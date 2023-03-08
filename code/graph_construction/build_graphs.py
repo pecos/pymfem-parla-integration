@@ -375,8 +375,12 @@ def main(meshfile_path, M, max_size, root):
     # largest number that gives a final mesh with no more than 'max_size'elements.
     ref_levels = int(np.floor(np.log(max_size / mesh.GetNE()) / np.log(2.) /dim))
 
+    print("Number of serial refinement levels: %d"%ref_levels)
+
     for x in range(ref_levels):
+        print("Beginning refinement stage %s"%x)
         mesh.UniformRefinement()
+        print("Finished refinement stage %s"%x)
 
     print("Number of finite elements: " + str(mesh.GetNE()))
 

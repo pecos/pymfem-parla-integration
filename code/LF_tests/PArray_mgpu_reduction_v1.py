@@ -98,6 +98,9 @@ def main():
             # This lives on device 0
             reduction_result_cp = cp.zeros([N], dtype=cp.int64)
 
+            # Specify the dependencies for the setup
+            deps = [rts[trial_idx-1]] if trial_idx > 0 else []
+
             # Setup the array
             for i in range(blocks):
 
@@ -105,12 +108,14 @@ def main():
                 dev_idx = i % ngpus
 
                 # Set the values in the PArray to be the block idx
-                @spawn(taskid=sts[trial_idx,i], placement=gpu[dev_idx], output=[A_pa[i]])
+                @spawn(taskid=sts[trial_idx,i], placement=gpu[dev_idx], output=[A_pa[i]], dependencies=deps)
                 def init_task():
+
                     A_pa[i,:] = i
                     print("Inside the init task on device %d. Printing the initialized data now...\n"%dev_idx)
                     print("A_pa[i,:] =", A_pa[i,:], "\n")
-                await sts
+                
+            await sts
 
             print("Preparing to start the reduction task.")
 
@@ -119,9 +124,11 @@ def main():
             # Perform the reduction of the PArray on the device(s)
             @spawn(taskid=rts[trial_idx], placement=gpu[0], input=[A_pa], dependencies=[sts[trial_idx,0:blocks]])
             def reduction_task():
+
                 print("Inside the reduction task on device 0. Printing the input data now...\n")
                 print("A_pa.array =", A_pa.array, "\n")
                 reduction_result_cp[:] = cp.sum(A_pa.array, axis=0)
+            
             await rts
 
             parla_end = time.perf_counter()
