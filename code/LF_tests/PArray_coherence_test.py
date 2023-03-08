@@ -74,6 +74,7 @@ def main():
         # Create the task space for Parla
         sts = TaskSpace("SetupTaskSpace")
         rts = TaskSpace("ReductionTaskSpace")
+        dts = TaskSpace("DataTaskSpace")
 
         # Store the times for statistics
         parla_times = np.zeros([trials]) 
@@ -98,35 +99,42 @@ def main():
         # Create the array that will hold the reduction
         # This lives on device 0
         reduction_result_cp = cp.zeros([N], dtype=cp.int64)
+        reduction_result_pa = parray.asarray(reduction_result_cp)
 
         for trial_idx in range(trials):
 
             print("Trial %d"%(trial_idx+1))
 
-            # Setup the array
             for i in range(blocks):
 
                 # Map the block to a specific device
                 dev_idx = i % ngpus
 
-                # Set the values in the PArray to be the block idx
-                @spawn(taskid=sts[trial_idx,i], placement=gpu[dev_idx], output=[A_pa[i]])
+                deps = [rts[trial_idx-1]] if trial_idx > 0 else []
+
+                @spawn(taskid=sts[trial_idx,i], placement=gpu[dev_idx], output=[A_pa[i]], dependencies=deps)
                 def init_task():
+
+                    # Set the values in the PArray to be the block idx
                     A_pa[i,:] = i
                     print("Inside the init task on device %d. Printing the initialized data now...\n"%dev_idx)
                     print("A_pa[i,:] =", A_pa[i,:], "\n")
-                await sts
+
+            await sts
 
             print("Preparing to start the reduction task.")
 
             parla_start = time.perf_counter()
             
             # Perform the reduction of the PArray on the device(s)
-            @spawn(taskid=rts[trial_idx], placement=gpu[0], input=[A_pa], dependencies=[sts[trial_idx,0:blocks]])
+            @spawn(taskid=rts[trial_idx], placement=gpu[0], input=[A_pa], 
+                   output=[reduction_result_pa], dependencies=[sts[trial_idx,0:blocks]])
             def reduction_task():
+
                 print("Inside the reduction task on device 0. Printing the input data now...\n")
                 print("A_pa.array =", A_pa.array, "\n")
-                reduction_result_cp[:] = cp.sum(A_pa.array, axis=0)
+                reduction_result_pa.array[:] = cp.sum(A_pa.array, axis=0)
+
             await rts
 
             parla_end = time.perf_counter()
@@ -137,9 +145,12 @@ def main():
         print("Parla times (min, max, avg) [s] ", parla_times.min(),",",
         parla_times.max(),",", parla_times.mean(), "\n",flush=True)
 
-        # Check for correctness on the host
-        # We need to "get" a host copy of the device array for the comparison
-        print("Is the result correct?", np.all(reduction_result_cp.get() == solution), "\n")
+        # Move the PArray back to the host and measure errors
+        @spawn(taskid=dts[0], placement=cpu, input=[reduction_result_pa])
+        def check_result():
+
+            print("Is the result correct?", np.all(reduction_result_pa.array == solution), "\n")
+
 
 if __name__ == "__main__":
 
