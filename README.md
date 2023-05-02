@@ -7,6 +7,8 @@ There are several complications involving the build for PyMFEM. This project is 
 
 `conda env create -f PyMFEM_env.yml`
 
+## Parallel build for distributed memory CPUs
+
 The parallel CPU build requires Metis, which (at the time of this writing) has undergone signficant changes and does not appear to function within MFEM. Instead, we recommend grabbing the tarball `Metis-5.1.0.tar.gz` in `mfem/tpls` and building with `cc=icc` and `shared=1`. Then, one needs to copy the `.so` file in the build directory to a new `lib` directory so that MFEM can see this.
 
 Once we have built Metis, we can navigate to the top level of the PyMFEM directory and run the following:
@@ -14,6 +16,13 @@ Once we have built Metis, we can navigate to the top level of the PyMFEM directo
 `python setup.py install --with-parallel --metis-prefix=~/Projects/metis-5.1.0/ --CC=icc --CXX=icc --MPICC=mpiicc --MPICXX=mpiicc`
 
 This installation command passes the location of the shared lib file for Metis to our script. Note that the `lib` directory for Metis 5.1 is assumed to be located in `~/Projects/metis-5.1.0/`. The remaining builds for Hypre and MFEM are called internally in the script; however, it is possible to pass pre-built lib files to this script to reduce the build time. There is a help command in the file `setup.py` that lists some build options.
+
+## CUDA build for shared memory systems
+
+As of this writing, we have only managed to successfully build the CUDA support for shared memory systems. The distributed case is a bit more complicated because of the build for Hypre, but we shall return to this at a later time. We have successfully compiled the code with the aid of the following modules/conda packages on Frontera: `cuda/10.1`, `cudatoolkit/10.1.243`, and `gcc/8.3.0`. Then, inside PyMFEM, we can run the command
+`python setup.py clean --all`
+to clean the existing files, followed by
+`python setup.py install --with-cuda --CC=gcc --CXX=gcc`.
 
 # Remarks on the documentation for PyMFEM
 Documentation for PyMFEM is located in `docs/install.txt` and `docs/manual.txt`. The installation file provides several use cases for building the wrappers, most of which will likely be depracated. Details concerning some of the basic functionality of the code and some methods, including accessing Numpy arrays can be found in the manual file. For more complicated use cases, we found that it was necessary to parse through some of the SWIG generated python files to get information about the classes and interfaces. While much of the notation and code functionality mimics MFEM, some of the interfaces are different.
