@@ -1,0 +1,66 @@
+#!/bin/bash
+#----------------------------------------------------
+#   Script for multi-core CPU runs on 
+#   TACC Frontera CLX nodes
+#
+#   *** Job in Small Queue***
+# 
+# Last revised: 2 July 2023
+#
+# Notes: This particular script launches a python
+# script that duplicates sparse matrices for graphs
+# to the egr format used by the ECL at TSU.
+#
+#----------------------------------------------------
+
+# Can't use ${SCRATCH} here because sbatch doesn't understand shell commands...
+#SBATCH -J duplicate_data          # Job name
+#SBATCH -o /scratch1/09047/was2489/duplicate_data.o%j      # Name of stdout output file
+#SBATCH -e /scratch1/09047/was2489/duplicate_data.e%j      # Name of stderr error file
+#SBATCH -p small           # Queue (partition) name
+#SBATCH -N 1               # Total # of nodes (must be 1 for serial)
+#SBATCH -n 56              # Total # of cores
+#SBATCH -t 02:00:00        # Run time (hh:mm:ss)
+#SBATCH --mail-type=all    # Send email at begin and end of job
+#SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
+#SBATCH --mail-user=william.sands@austin.utexas.edu
+
+# To use the conda environment and modules therein, we
+# need to source the conda.sh file
+source ${HOME}/miniconda3/etc/profile.d/conda.sh
+
+# Go to the directory of the project
+cd ${WORK}/Projects/pymfem-parla-integration/code/graph_construction
+
+# Activate the Python environment
+conda activate PyMFEM_env
+
+# Number of duplicates to use for each graph
+nd=10
+
+# Specify the location of the root where data files will be stored
+root_dir=${SCRATCH}
+
+# List the source and destination locations that will hold the duplicate data
+src_dir="twist-hex-o3-s6-r4-p.mesh-M-4"
+dst_dir="twist-hex-o3-s6-r4-p_duplicate.mesh-M-4"
+
+# Specify the file (executable) used to generate the ECL binary format
+# This is assumed to be in the CWD
+executable=mm2ecl
+
+src_path="${root_dir}/${src_dir}"
+dst_path="${root_dir}/${dst_dir}"
+
+# Run the duplication script
+python duplicate_mesh_graphs.py -src $src_path -dst $dst_path -num_duplicates $nd
+
+# Convert the formatting for the duplicate graph data
+python convert_npz_to_egr.py -src $dst_path -exe $executable -root $root_dir
+
+printf "\nSuccessfully finished the duplication process.\n"
+
+
+
+
+
