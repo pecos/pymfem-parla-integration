@@ -59,12 +59,18 @@ def duplicate_graph(coo_data, num_duplicates):
     col_dup = np.zeros((nnz*num_duplicates), dtype=np.int64)
     val_dup = np.zeros((nnz*num_duplicates), dtype=np.int64)
 
+    # Calculate the shift for the nodes in the duplicates
+    # The number of nodes is the maximum entry among the row/column arrays
+    num_nodes = max(row.max(), col.max())
+
     # Now fill the duplicate data set by applying the appropriate index shifts
     for i in range(num_duplicates):
         for j in range(nnz):
 
-            row_dup[i*nnz + j] = row[j]
-            col_dup[i*nnz + j] = col[j]
+            # We need to shift the row and column indices by the number of nodes. 
+            # Otherwise the number of nodes is the same. The value array is the same however.
+            row_dup[i*nnz + j] = i*num_nodes + row[j]
+            col_dup[i*nnz + j] = i*num_nodes + col[j]
             val_dup[i*nnz + j] = val[j]
 
     # Now take the (row,col,val) data and build the coo matrix

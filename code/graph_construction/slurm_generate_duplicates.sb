@@ -5,7 +5,7 @@
 #
 #   *** Job in Small Queue***
 # 
-# Last revised: 2 July 2023
+# Last revised: 5 July 2023
 #
 # Notes: This particular script launches a python
 # script that duplicates sparse matrices for graphs
@@ -20,7 +20,7 @@
 #SBATCH -p small           # Queue (partition) name
 #SBATCH -N 1               # Total # of nodes (must be 1 for serial)
 #SBATCH -n 56              # Total # of cores
-#SBATCH -t 02:00:00        # Run time (hh:mm:ss)
+#SBATCH -t 12:00:00        # Run time (hh:mm:ss)
 #SBATCH --mail-type=all    # Send email at begin and end of job
 #SBATCH -A PHY21005        # Project/Allocation name (req'd if you have more than 1)
 #SBATCH --mail-user=william.sands@austin.utexas.edu
